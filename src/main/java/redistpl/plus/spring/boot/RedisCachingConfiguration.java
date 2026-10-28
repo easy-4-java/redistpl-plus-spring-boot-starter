@@ -5,9 +5,7 @@ import com.fasterxml.jackson.databind.json.JsonMapperBuilderCustomizer;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
-import org.springframework.boot.autoconfigure.cache.CacheAutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration;
@@ -55,7 +53,6 @@ import java.util.stream.Collectors;
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(RedisOperations.class)
-@AutoConfigureAfter({CacheAutoConfiguration.class})
 @AutoConfigureBefore({RedisJacksonConfiguration.class, RedisAutoConfiguration.class})
 @EnableConfigurationProperties({RedisProperties.class, RedisThreadPoolProperties.class})
 public class RedisCachingConfiguration extends CachingConfigurerSupport {
@@ -255,7 +252,9 @@ public class RedisCachingConfiguration extends CachingConfigurerSupport {
 		 * 2.线程池的队列
 		 * 3.线程池的拒绝策略
 		 */
-		ExecutorServiceMetrics.monitor(registry, executor, pool.getThreadNamePrefix(),  metricPrefix);
+		if (Objects.nonNull(registry)) {
+			ExecutorServiceMetrics.monitor(registry, executor, pool.getThreadNamePrefix(), metricPrefix);
+		}
 		return executor;
 	}
 
