@@ -1111,12 +1111,17 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public Flux<Object> lLeftPop(String key, Integer count) {
 		try {
+			if (count <= 0) {
+				return Flux.empty();
+			}
 			return reactiveRedisTemplate.createFlux((ReactiveRedisConnection connection) -> {
 				ByteBuffer rawKey = getRawKey(key);
 				ReactiveListCommands listCommands = connection.listCommands();
 				return listCommands.lRange(rawKey, 0, count - 1)
-						.doOnNext(rawValue -> listCommands.lTrim(rawKey, count, -1))
-						.map(rawValue -> getDeserializeValue(rawValue));
+						.collectList()
+						.flatMapMany(rawValues -> listCommands.lTrim(rawKey, count, -1)
+								.thenMany(Flux.fromIterable(rawValues)))
+						.map(this::getDeserializeValue);
 			});
 		} catch (Exception e) {
 			return fluxError(e);
@@ -1335,12 +1340,17 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public Flux<Object> lRightPop(String key, Integer count) {
 		try {
+			if (count <= 0) {
+				return Flux.empty();
+			}
 			return reactiveRedisTemplate.createFlux((ReactiveRedisConnection connection) -> {
 				ByteBuffer rawKey = getRawKey(key);
 				ReactiveListCommands listCommands = connection.listCommands();
-				return listCommands.lRange(rawKey, -(count - 1), -1)
-						.map(rawValue -> getDeserializeValue(rawValue))
-						.doOnNext(rawValue -> listCommands.lTrim(rawKey, 0, -(count - 1)));
+				return listCommands.lRange(rawKey, -count, -1)
+						.collectList()
+						.flatMapMany(rawValues -> listCommands.lTrim(rawKey, 0, -count - 1)
+								.thenMany(Flux.fromIterable(rawValues)))
+						.map(this::getDeserializeValue);
 			});
 		} catch (Exception e) {
 			return fluxError(e);
