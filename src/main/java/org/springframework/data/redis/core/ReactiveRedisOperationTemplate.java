@@ -2810,7 +2810,7 @@ public class ReactiveRedisOperationTemplate {
      */
 	public Mono<Boolean> zHas(String key, Object value) {
 		try {
-			return getZSetOperations().score(key, value).flatMap(score -> Mono.just(Objects.nonNull(score)));
+			return getZSetOperations().score(key, value).map(score -> true).defaultIfEmpty(false);
 		} catch (Exception e) {
 			return monoError(e);
 		}
