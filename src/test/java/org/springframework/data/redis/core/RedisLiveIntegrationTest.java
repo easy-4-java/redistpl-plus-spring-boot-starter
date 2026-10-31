@@ -1,8 +1,10 @@
 package org.springframework.data.redis.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -18,6 +20,7 @@ import org.junit.jupiter.api.TestFactory;
 import org.springframework.data.domain.Range;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.connection.DataType;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
@@ -520,5 +523,35 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.zRemByScore(union, Range.closed(4.0, 5.0)).block()).isEqualTo(2L);
         assertThat(reactive.zRange(union, Range.closed(0L, 2L)).collectList().block())
                 .containsExactly("a");
+    }
+
+    @Test
+    void keyDiscoveryRenameAndAbsoluteExpiryObserveRealState() {
+        String prefix = key("keys");
+        String original = prefix + ":original";
+        String renamed = prefix + ":renamed";
+        sync.set(original, "value");
+        assertThat(sync.type(original)).isEqualTo(DataType.STRING);
+        assertThat(sync.keys(prefix + ":*")).contains(original);
+        assertThat(sync.scan(prefix + ":*", 10)).contains(original);
+        assertThat(reactive.getKey(prefix + ":*").collectList().block()).contains(original);
+        assertThat(sync.renameIfAbsent(original, renamed)).isTrue();
+        assertThat(sync.hasKey(original)).isFalse();
+        assertThat(sync.getString(renamed)).isEqualTo("value");
+        assertThat(sync.expireAt(renamed, new Date(System.currentTimeMillis() + 30_000))).isTrue();
+        assertThat(sync.getExpire(renamed)).isBetween(1L, 30L);
+        assertThat(reactive.getVagueKey("renamed").collectList().block()).contains(renamed);
+    }
+
+    @Test
+    void wrongRedisTypeFailsWithoutChangingTheOriginalValue() {
+        String key = key("wrong-type");
+        sync.set(key, "plain");
+        assertThatThrownBy(() -> sync.hSet(key, "field", "value"))
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(sync.getString(key)).isEqualTo("plain");
+        assertThatThrownBy(() -> reactive.hSet(key, "field", "value").block())
+                .satisfies(error -> assertThat(error.getCause()).hasMessageContaining("WRONGTYPE"));
+        assertThat(reactive.getString(key).block()).isEqualTo("plain");
     }
 }
