@@ -459,4 +459,66 @@ class RedisLiveIntegrationTest {
         assertThat(sync.pfMerge(merged, first, second)).isEqualTo(3L);
         assertThat(sync.pfCount(merged)).isEqualTo(3L);
     }
+
+    @Test
+    void synchronousSetStoreOperationsPersistComputedMembers() {
+        String left = key("set-left-store");
+        String right = key("set-right-store");
+        sync.sAdd(left, "a", "b");
+        sync.sAdd(right, "b", "c");
+        String diff = key("set-diff-store");
+        String intersection = key("set-intersection-store");
+        String union = key("set-union-store");
+        assertThat(sync.sDiffAndStore(left, right, diff)).isEqualTo(1L);
+        assertThat(sync.sGet(diff)).containsExactly("a");
+        assertThat(sync.sIntersectAndStore(left, right, intersection)).isEqualTo(1L);
+        assertThat(sync.sGet(intersection)).containsExactly("b");
+        assertThat(sync.sUnionAndStore(left, right, union)).isEqualTo(3L);
+        assertThat(sync.sGet(union)).containsExactlyInAnyOrder("a", "b", "c");
+    }
+
+    @Test
+    void reactiveSetStoreOperationsPersistComputedMembers() {
+        String left = key("reactive-set-left-store");
+        String right = key("reactive-set-right-store");
+        reactive.sAdd(left, "a", "b").block();
+        reactive.sAdd(right, "b", "c").block();
+        String diff = key("reactive-set-diff-store");
+        String intersection = key("reactive-set-intersection-store");
+        String union = key("reactive-set-union-store");
+        assertThat(reactive.sDiffAndStore(left, right, diff).block()).isEqualTo(1L);
+        assertThat(reactive.sGet(diff).collectList().block()).containsExactly("a");
+        assertThat(reactive.sIntersectAndStore(left, right, intersection).block()).isEqualTo(1L);
+        assertThat(reactive.sGet(intersection).collectList().block()).containsExactly("b");
+        assertThat(reactive.sUnionAndStore(left, right, union).block()).isEqualTo(3L);
+        assertThat(reactive.sGet(union).collectList().block()).containsExactlyInAnyOrder("a", "b", "c");
+    }
+
+    @Test
+    void sortedSetScoreRangesAndStoresPreserveOrderAndScores() {
+        String left = key("z-left");
+        String right = key("z-right");
+        assertThat(sync.zAdd(left, "a", 1.0)).isTrue();
+        assertThat(sync.zAdd(left, "b", 3.0)).isTrue();
+        assertThat(sync.zAdd(right, "b", 2.0)).isTrue();
+        assertThat(sync.zAdd(right, "c", 4.0)).isTrue();
+        assertThat(sync.zCount(left, 1.0, 2.0)).isEqualTo(1L);
+        assertThat(sync.zRangeByScore(left, 2.0, 4.0)).containsExactly("b");
+        assertThat(reactive.zRangeByScore(left, Range.closed(2.0, 4.0)).collectList().block())
+                .containsExactly("b");
+        assertThat(reactive.zRevrange(left, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("b", "a");
+        assertThat(sync.zRevRank(left, "b")).isZero();
+        String intersection = key("z-intersection");
+        assertThat(sync.zIntersectAndStore(left, right, intersection)).isEqualTo(1L);
+        assertThat(sync.zScore(intersection, "b")).isEqualTo(5.0);
+        String union = key("z-union");
+        assertThat(reactive.zUnionAndStore(left, right, union).block()).isEqualTo(3L);
+        assertThat(reactive.zRange(union, Range.closed(0L, 2L)).collectList().block())
+                .containsExactly("a", "c", "b");
+        assertThat(reactive.zScore(union, "b").block()).isEqualTo(5.0);
+        assertThat(reactive.zRemByScore(union, Range.closed(4.0, 5.0)).block()).isEqualTo(2L);
+        assertThat(reactive.zRange(union, Range.closed(0L, 2L)).collectList().block())
+                .containsExactly("a");
+    }
 }
