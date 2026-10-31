@@ -2876,4 +2876,63 @@ class RedisLiveIntegrationTest {
                 assertThatThrownBy(() -> command.command().accept(null))
                         .isInstanceOf(RedisOperationException.class)));
     }
+
+    @TestFactory
+    Stream<DynamicTest> synchronousStreamBitmapAndHyperLogLogCommandsRejectNullKeys() {
+        List<InvalidSyncKeyCommand> commands = List.of(
+                new InvalidSyncKeyCommand("stream add", k -> sync.xAdd(k, Map.of("event", "created"))),
+                new InvalidSyncKeyCommand("stream trim", k -> sync.xTrim(k, 1)),
+                new InvalidSyncKeyCommand("stream delete string ID", k -> sync.xDel(k, "1-0")),
+                new InvalidSyncKeyCommand("stream delete record ID", k -> sync.xDel(k, org.springframework.data.redis.connection.stream.RecordId.of("1-0"))),
+                new InvalidSyncKeyCommand("stream length", sync::xLen),
+                new InvalidSyncKeyCommand("stream range", k -> sync.xRange(k, Range.unbounded())),
+                new InvalidSyncKeyCommand("stream limited range", k -> sync.xRange(k, Range.unbounded(), Limit.limit().count(1))),
+                new InvalidSyncKeyCommand("stream typed range", k -> sync.xRangeFor(String.class, k, Range.unbounded())),
+                new InvalidSyncKeyCommand("stream typed limited range", k -> sync.xRangeFor(String.class, k, Range.unbounded(), Limit.limit().count(1))),
+                new InvalidSyncKeyCommand("stream group", k -> sync.addGroup(k, "readers")),
+                new InvalidSyncKeyCommand("hyperloglog add", k -> sync.pfAdd(k, "a")),
+                new InvalidSyncKeyCommand("hyperloglog delete", sync::pfDel),
+                new InvalidSyncKeyCommand("hyperloglog count", k -> sync.pfCount(k)),
+                new InvalidSyncKeyCommand("hyperloglog merge", k -> sync.pfMerge(k, "source")),
+                new InvalidSyncKeyCommand("set bit", k -> sync.setBit(k, 0, true)),
+                new InvalidSyncKeyCommand("get bit", k -> sync.getBit(k, 0)),
+                new InvalidSyncKeyCommand("append", k -> sync.append(k, "suffix"))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> command.command().accept(null))
+                        .isInstanceOf(RedisOperationException.class)));
+    }
+
+    @Test
+    void synchronousStreamTrimGroupAndDeleteOverloadsChangeStoredRecords() {
+        String stream = key("sync-stream-variants");
+        var first = sync.xAdd(stream, Map.of("event", "one"));
+        var second = sync.xAdd(stream, Map.of("event", "two"));
+        var third = sync.xAdd(stream, Map.of("event", "three"));
+        assertThat(sync.xRange(stream, Range.unbounded(), Limit.limit().count(2)))
+                .extracting(record -> record.getValue().get("event"))
+                .containsExactly("one", "two");
+        assertThat(sync.addGroup(stream, "readers")).isNotNull();
+        assertThat(sync.xTrim(stream, 2)).isEqualTo(1L);
+        assertThat(sync.xLen(stream)).isEqualTo(2L);
+        assertThat(sync.xDel(stream, first)).isZero();
+        assertThat(sync.xDel(stream, second)).isEqualTo(1L);
+        assertThat(sync.xDel(stream, third.getValue())).isEqualTo(1L);
+        assertThat(sync.xLen(stream)).isZero();
+    }
+
+    @Test
+    void synchronousServerReadsAndHyperLogLogDeleteUseOwnedRedis() {
+        long now = sync.timeNow();
+        assertThat(now).isPositive();
+        assertThat(sync.period(now + 10_000)).isBetween(1L, 10_000L);
+        assertThat(sync.dbSize()).isNotNegative();
+        assertThat(sync.lastSave()).isNotNegative();
+
+        String hll = key("sync-hll-delete");
+        assertThat(sync.pfAdd(hll, "a", "b")).isEqualTo(1L);
+        assertThat(sync.pfCount(hll)).isEqualTo(2L);
+        assertThat(sync.pfDel(hll)).isTrue();
+        assertThat(sync.hasKey(hll)).isFalse();
+    }
 }
