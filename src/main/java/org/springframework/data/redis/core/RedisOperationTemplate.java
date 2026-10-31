@@ -1652,7 +1652,11 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 
 	public <V> Long lLeftPushxAll(String key, Collection<V> values, long seconds) {
 		try {
-			long rt = values.stream().map(value -> redisTemplate.opsForList().leftPushIfPresent(key, value)).count();
+			long rt = 0;
+			for (V value : values) {
+				redisTemplate.opsForList().leftPushIfPresent(key, value);
+				rt++;
+			}
 			if (seconds > 0) {
 				expire(key, seconds);
 			}
@@ -1665,7 +1669,11 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 
 	public <V> Long lLeftPushxAll(String key, Collection<V> values, Duration timeout) {
 		try {
-			long rt = values.stream().map(value -> redisTemplate.opsForList().leftPushIfPresent(key, value)).count();
+			long rt = 0;
+			for (V value : values) {
+				redisTemplate.opsForList().leftPushIfPresent(key, value);
+				rt++;
+			}
 			if (!timeout.isNegative()) {
 				expire(key, timeout);
 			}
@@ -1938,7 +1946,11 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 
 	public <V> Long lRightPushxAll(String key, Collection<V> values, long seconds) {
 		try {
-			long rt = values.stream().map(value -> redisTemplate.opsForList().rightPushIfPresent(key, value)).count();
+			long rt = 0;
+			for (V value : values) {
+				redisTemplate.opsForList().rightPushIfPresent(key, value);
+				rt++;
+			}
 			if (seconds > 0) {
 				expire(key, seconds);
 			}
@@ -1951,7 +1963,11 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 
 	public <V> Long lRightPushxAll(String key, Collection<V> values, Duration timeout) {
 		try {
-			long rt = values.stream().map(value -> redisTemplate.opsForList().rightPushIfPresent(key, value)).count();
+			long rt = 0;
+			for (V value : values) {
+				redisTemplate.opsForList().rightPushIfPresent(key, value);
+				rt++;
+			}
 			if (!timeout.isNegative()) {
 				expire(key, timeout);
 			}
@@ -5804,3 +5820,4 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	}
 
 }
+
