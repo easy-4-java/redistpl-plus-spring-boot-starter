@@ -1215,4 +1215,59 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.sGet(reactiveLeft).collectList().block()).containsExactly("b");
         assertThat(reactive.sHasKey(reactiveLeft, "a").block()).isFalse();
     }
+
+    @Test
+    void timedBatchListPushesPreserveEveryMemberAndExpiry() {
+        String syncLeftSeconds = key("sync-list-left-batch-seconds");
+        assertThat(sync.lLeftPushAll(syncLeftSeconds, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncLeftSeconds, 0, -1)).containsExactly("b", "a");
+        assertThat(sync.getExpire(syncLeftSeconds)).isBetween(1L, 30L);
+        String syncLeftDuration = key("sync-list-left-batch-duration");
+        assertThat(sync.lLeftPushAll(syncLeftDuration, List.of("a", "b"), Duration.ofSeconds(30)))
+                .isEqualTo(2L);
+        assertThat(sync.lRangeString(syncLeftDuration, 0, -1)).containsExactly("b", "a");
+        assertThat(sync.getExpire(syncLeftDuration)).isBetween(1L, 30L);
+        String syncRightSeconds = key("sync-list-right-batch-seconds");
+        assertThat(sync.lRightPushAll(syncRightSeconds, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncRightSeconds, 0, -1)).containsExactly("a", "b");
+        assertThat(sync.getExpire(syncRightSeconds)).isBetween(1L, 30L);
+        String syncRightDuration = key("sync-list-right-batch-duration");
+        assertThat(sync.lRightPushAll(syncRightDuration, List.of("a", "b"), Duration.ofSeconds(30)))
+                .isEqualTo(2L);
+        assertThat(sync.lRangeString(syncRightDuration, 0, -1)).containsExactly("a", "b");
+        assertThat(sync.getExpire(syncRightDuration)).isBetween(1L, 30L);
+
+        String reactiveLeftDuration = key("reactive-list-left-batch-duration");
+        assertThat(reactive.lLeftPushAll(reactiveLeftDuration, List.of("a", "b"), Duration.ofSeconds(30)).block())
+                .isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveLeftDuration, 0, -1).collectList().block())
+                .containsExactly("b", "a");
+        assertTimed(reactiveLeftDuration);
+        String reactiveRightSeconds = key("reactive-list-right-batch-seconds");
+        assertThat(reactive.lRightPushAll(reactiveRightSeconds, List.of("a", "b"), 30L).block())
+                .isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveRightSeconds, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+        assertTimed(reactiveRightSeconds);
+    }
+
+    @Test
+    void pushIfPresentOverloadsOnlyAppendToExistingLists() {
+        String syncKey = key("sync-list-pushx-single");
+        assertThat(sync.lRightPush(syncKey, "seed")).isEqualTo(1L);
+        assertThat(sync.lLeftPushx(syncKey, "a", 30L)).isEqualTo(2L);
+        assertThat(sync.lRightPushx(syncKey, "b", 30L)).isEqualTo(3L);
+        assertThat(sync.lLeftPushx(syncKey, "c", Duration.ofSeconds(30))).isEqualTo(4L);
+        assertThat(sync.lRightPushx(syncKey, "d", Duration.ofSeconds(30))).isEqualTo(5L);
+        assertThat(sync.lRangeString(syncKey, 0, -1)).containsExactly("c", "a", "seed", "b", "d");
+        assertThat(sync.getExpire(syncKey)).isBetween(1L, 30L);
+
+        String reactiveKey = key("reactive-list-pushx-single");
+        assertThat(reactive.lRightPush(reactiveKey, "seed").block()).isEqualTo(1L);
+        assertThat(reactive.lLeftPushx(reactiveKey, "a", 30L).block()).isEqualTo(2L);
+        assertThat(reactive.lRightPushx(reactiveKey, "b", Duration.ofSeconds(30)).block()).isEqualTo(3L);
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("a", "seed", "b");
+        assertTimed(reactiveKey);
+    }
 }
