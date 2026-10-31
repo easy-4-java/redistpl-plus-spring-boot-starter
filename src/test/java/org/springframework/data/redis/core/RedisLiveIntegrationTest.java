@@ -3346,4 +3346,53 @@ class RedisLiveIntegrationTest {
                 .extracting(org.springframework.data.redis.connection.zset.Tuple::getValue)
                 .containsExactly(one);
     }
+
+    @Test
+    void synchronousTypedListReadsHandleCollectionValuesAndConversionErrors() {
+        JsonOperations json = jsonOperations();
+        String list = key("json-collection-list"), empty = key("json-empty-list");
+        try {
+            json.sync().set(list, List.of(1, 2));
+            json.sync().set(empty, List.of());
+            assertThat(json.sync().getList(list, Integer.class)).containsExactly(1, 2);
+            assertThat(json.sync().getList(empty, Integer.class)).isEmpty();
+        } finally {
+            sync.del(list, empty);
+        }
+
+        String first = key("bad-typed-left-pop"), second = key("bad-reference-left-pop");
+        sync.lRightPushAll(first, List.of("not-a-number", "remaining"));
+        sync.lRightPushAll(second, List.of("not-a-number", "remaining"));
+        assertThatThrownBy(() -> sync.lLeftPop(first, 1, Integer.class))
+                .isInstanceOf(RedisOperationException.class);
+        assertThatThrownBy(() -> sync.lLeftPop(second, 1, new TypeReference<Integer>() {}))
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(sync.lRangeString(first, 0, -1)).containsExactly("remaining");
+        assertThat(sync.lRangeString(second, 0, -1)).containsExactly("remaining");
+    }
+
+    @Test
+    void synchronousInvalidLuaAndPipelineCommandsPropagateErrorsWithoutMutatingData() {
+        String source = key("script-error-source");
+        sync.set(source, "original");
+        String script = "return redis.call('NO_SUCH_COMMAND', KEYS[1])";
+        assertThatThrownBy(() -> sync.executeLuaScript(script, String.class, List.of(source)))
+                .isInstanceOf(RedisOperationException.class);
+        assertThatThrownBy(() -> sync.executeLuaScript(RedisScript.of(script, String.class), List.of(source)))
+                .isInstanceOf(RedisOperationException.class);
+        assertThatThrownBy(() -> sync.executeLuaScript(
+                new ByteArrayResource(script.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                String.class, List.of(source)))
+                .isInstanceOf(RedisOperationException.class);
+        StringRedisSerializer strings = new StringRedisSerializer();
+        RedisCallback<Object> invalid = connection -> {
+            connection.hGet(strings.serialize(source), strings.serialize("field"));
+            return null;
+        };
+        assertThatThrownBy(() -> sync.executePipelined(invalid))
+                .isInstanceOf(RedisOperationException.class);
+        assertThatThrownBy(() -> sync.executePipelined(invalid, strings))
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(sync.getString(source)).isEqualTo("original");
+    }
 }
