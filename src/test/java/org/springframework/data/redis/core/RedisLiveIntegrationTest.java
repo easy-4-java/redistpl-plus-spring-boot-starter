@@ -1107,4 +1107,48 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
                 .containsExactly("2", "4", "6");
     }
+
+    @Test
+    void hashTypedReadsAndDefaultsReflectPersistedValuesAcrossKeys() {
+        String first = key("hash-typed-a");
+        String second = key("hash-typed-b");
+        assertThat(sync.hmSet(first, Map.of("count", "2", "ratio", "1.5"))).isTrue();
+        assertThat(sync.hmSet(second, Map.of("count", "4", "ratio", "2.5"))).isTrue();
+        assertThat(sync.hGetLong(first, "count")).isEqualTo(2L);
+        assertThat(sync.hGetInteger(second, "count")).isEqualTo(4);
+        assertThat(sync.hGetDouble(first, "ratio")).isEqualTo(1.5);
+        assertThat(sync.hGetString(first, "count")).isEqualTo("2");
+        assertThat(sync.hGetLong(first, "absent", 9L)).isEqualTo(9L);
+        assertThat(sync.hGetInteger(first, "absent", 9)).isEqualTo(9);
+        assertThat(sync.hGetDouble(first, "absent", 9.5)).isEqualTo(9.5);
+        assertThat(sync.hGetString(first, "absent", "none")).isEqualTo("none");
+        assertThat(sync.hGetLong(List.of(first, second), "count")).containsExactly(2L, 4L);
+        assertThat(sync.hGetInteger(List.of(first, second), "count")).containsExactly(2, 4);
+        assertThat(sync.hGetDouble(List.of(first, second), "ratio")).containsExactly(1.5, 2.5);
+        assertThat(sync.hGetString(List.of(first, second), "count")).containsExactly("2", "4");
+        assertThat(sync.hMultiGetLong(List.of(first, second), "count")).containsExactly(2L, 4L);
+        assertThat(sync.hMultiGetString(List.of(first, second), "count")).containsExactly("2", "4");
+        assertThat(sync.hGet(first, "count")).isEqualTo("2");
+
+        String reactiveFirst = key("hash-typed-reactive-a");
+        String reactiveSecond = key("hash-typed-reactive-b");
+        assertThat(reactive.hmSet(reactiveFirst, Map.<Object, Object>of("count", "2", "ratio", "1.5")).block()).isTrue();
+        assertThat(reactive.hmSet(reactiveSecond, Map.<Object, Object>of("count", "4", "ratio", "2.5")).block()).isTrue();
+        assertThat(reactive.hGetLong(reactiveFirst, "count").block()).isEqualTo(2L);
+        assertThat(reactive.hGetInteger(reactiveSecond, "count").block()).isEqualTo(4);
+        assertThat(reactive.hGetDouble(reactiveFirst, "ratio").block()).isEqualTo(1.5);
+        assertThat(reactive.hGetLong(reactiveFirst, "absent", 9L).block()).isEqualTo(9L);
+        assertThat(reactive.hGetInteger(reactiveFirst, "absent", 9).block()).isEqualTo(9);
+        assertThat(reactive.hGetDouble(reactiveFirst, "absent", 9.5).block()).isEqualTo(9.5);
+        assertThat(reactive.hGetString(reactiveFirst, "absent", "none").block()).isEqualTo("none");
+        assertThat(reactive.hGetLong(List.of(reactiveFirst, reactiveSecond), "count").collectList().block())
+                .containsExactly(2L, 4L);
+        assertThat(reactive.hGetInteger(List.of(reactiveFirst, reactiveSecond), "count").collectList().block())
+                .containsExactly(2, 4);
+        assertThat(reactive.hGetDouble(List.of(reactiveFirst, reactiveSecond), "ratio").collectList().block())
+                .containsExactly(1.5, 2.5);
+        assertThat(reactive.hGetString(List.of(reactiveFirst, reactiveSecond), "count").collectList().block())
+                .containsExactly("2", "4");
+        assertThat(reactive.hGet(reactiveFirst, "count").block()).isEqualTo("2");
+    }
 }
