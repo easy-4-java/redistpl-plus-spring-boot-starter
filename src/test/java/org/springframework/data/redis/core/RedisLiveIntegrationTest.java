@@ -3101,4 +3101,29 @@ class RedisLiveIntegrationTest {
         assertThat(sync.sRandomDistinctFor(set, 2, new TypeReference<Integer>() {}))
                 .containsExactlyInAnyOrder(1, 2);
     }
+
+    @Test
+    void synchronousSortedSetWatchReportsVisibleRankChanges() {
+        String sorted = key("sync-watch-scores");
+        assertThat(sync.zIncrAndWatch(sorted, "a", 1.0, 0, 1)).isTrue();
+        sync.zAdd(sorted, "b", 2.0);
+        assertThat(sync.zIncrAndWatch(sorted, "a", 0.1, 0, 1)).isFalse();
+        assertThat(sync.zScore(sorted, "a")).isCloseTo(1.1, org.assertj.core.data.Offset.offset(0.0001));
+        assertThat(sync.zIncrAndWatch(sorted, "a", 2.0, 0, 1)).isTrue();
+        assertThat(sync.zRevrangeString(sorted, 0, 1)).containsExactly("a", "b");
+    }
+
+    @Test
+    void synchronousOwnerLockRetrySucceedsAfterTheOwnerReleases() throws Exception {
+        String lock = key("sync-retry-owner-lock");
+        assertThat(sync.tryLock(lock, "first", Duration.ofSeconds(5), 0, 0L)).isTrue();
+        CompletableFuture<Boolean> waiter = CompletableFuture.supplyAsync(() ->
+                sync.tryLock(lock, "second", 5_000L, 30, 20L));
+        Thread.sleep(80);
+        assertThat(sync.unlock(lock, "first")).isTrue();
+        assertThat(waiter.get(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(sync.unlock(lock, "first")).isFalse();
+        assertThat(sync.unlock(lock, "second")).isTrue();
+        assertThat(sync.hasKey(lock)).isFalse();
+    }
 }
