@@ -3039,4 +3039,66 @@ class RedisLiveIntegrationTest {
                 tuple -> sortedMembers.add(new String(tuple.getValue(), java.nio.charset.StandardCharsets.UTF_8)));
         assertThat(sortedMembers).containsExactly("drop:b");
     }
+
+    @Test
+    void synchronousTypedValueAndListWrappersReadPersistedJsonAndNumbers() {
+        String first = key("typed-json-first"), second = key("typed-json-second");
+        sync.set(first, "{\"name\":\"Ada\"}");
+        sync.set(second, "{\"name\":\"Lin\"}");
+        assertThat(sync.getFor(first, new TypeReference<Map<String, String>>() {}))
+                .containsEntry("name", "Ada");
+        assertThat(sync.mGetMap(List.of(first, second))).extracting(map -> map.get("name"))
+                .containsExactly("Ada", "Lin");
+        assertThat(sync.mGetFor(List.of(first, second), new TypeReference<Map<String, String>>() {}))
+                .extracting(map -> map.get("name")).containsExactly("Ada", "Lin");
+
+        String list = key("typed-json-list");
+        sync.lRightPushAll(list, List.of("{\"name\":\"Ada\"}", "{\"name\":\"Lin\"}"));
+        assertThat(sync.lRangeMap(list, 0, -1)).extracting(map -> map.get("name"))
+                .containsExactly("Ada", "Lin");
+        assertThat(sync.lRangeFor(list, 0, -1, new TypeReference<Map<String, String>>() {}))
+                .extracting(map -> map.get("name")).containsExactly("Ada", "Lin");
+
+        String numeric = key("typed-numeric"), numbers = key("typed-number-list");
+        sync.set(numeric, "8");
+        assertThat(sync.getInteger(numeric, 0)).isEqualTo(8);
+        assertThat(sync.getDouble(numeric, 0.0)).isEqualTo(8.0);
+        assertThat(sync.getFor(numeric, Integer.class)).isEqualTo(8);
+        sync.set(numbers, "[1,2]");
+        assertThat(sync.mGetList(List.of(numbers))).containsExactly(List.of(1, 2));
+        String arrayList = key("typed-array-list");
+        sync.lRightPushAll(arrayList, List.of("[1,2]", "[3,4]"));
+        assertThat(sync.lRangeList(arrayList, 0, -1))
+                .containsExactly(List.of(1, 2), List.of(3, 4));
+    }
+
+    @Test
+    void synchronousTypedHashAndSetWrappersReadPersistedNumbers() {
+        String first = key("typed-hash-a"), second = key("typed-hash-b");
+        sync.hSet(first, "field", "1");
+        sync.hSet(second, "field", "2");
+        assertThat(sync.hGetFor(first, "field", Integer.class)).isEqualTo(1);
+        assertThat(sync.hGetFor(first, "field", new TypeReference<Integer>() {})).isEqualTo(1);
+        assertThat(sync.hGetFor(List.of(first, second), "field", Integer.class)).containsExactly(1, 2);
+        assertThat(sync.hGetFor(List.of(first, second), "field", new TypeReference<Integer>() {}))
+                .containsExactly(1, 2);
+        assertThat(sync.hMultiGetInteger(List.of(first, second), "field")).containsExactly(1, 2);
+        assertThat(sync.hMultiGetDouble(List.of(first, second), "field")).containsExactly(1.0, 2.0);
+        assertThat(sync.hMultiGetFor(List.of(first, second), "field", Integer.class)).containsExactly(1, 2);
+        assertThat(sync.hMultiGetFor(List.of(first, second), "field", new TypeReference<Integer>() {}))
+                .containsExactly(1, 2);
+        assertThat(sync.hmGetFor(first, Map.class)).containsEntry("field", "1");
+
+        String set = key("typed-set");
+        sync.sAdd(set, "1", "2");
+        assertThat(sync.sGetString(set)).containsExactlyInAnyOrder("1", "2");
+        assertThat(sync.sGetInteger(set)).containsExactlyInAnyOrder(1, 2);
+        assertThat(sync.sGetDouble(set)).containsExactlyInAnyOrder(1.0, 2.0);
+        assertThat(sync.sGetFor(set, Integer.class)).containsExactlyInAnyOrder(1, 2);
+        assertThat(sync.sGetFor(set, new TypeReference<Integer>() {})).containsExactlyInAnyOrder(1, 2);
+        assertThat(sync.sRandomFor(set, 1, new TypeReference<Integer>() {})).allSatisfy(value ->
+                assertThat(value).isIn(1, 2));
+        assertThat(sync.sRandomDistinctFor(set, 2, new TypeReference<Integer>() {}))
+                .containsExactlyInAnyOrder(1, 2);
+    }
 }
