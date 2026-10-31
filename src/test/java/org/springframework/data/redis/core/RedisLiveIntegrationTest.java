@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,6 +41,7 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import redistpl.plus.spring.boot.RedisCachingConfiguration;
 import redistpl.plus.spring.boot.RedisReactiveCachingConfiguration;
 import reactor.core.publisher.Mono;
+import org.reactivestreams.Publisher;
 
 /** Exercises public operations against a Redis process owned by this test class. */
 class RedisLiveIntegrationTest {
@@ -2007,5 +2009,144 @@ class RedisLiveIntegrationTest {
         assertTimed(set);
         assertThat(reactive.sDel(set).block()).isTrue();
         assertThat(reactive.hasKey(set).block()).isFalse();
+    }
+
+    @Test
+    void reactiveCommandsRejectNullKeysBeforeSendingRedisWrites() {
+        assertThatThrownBy(() -> reactive.lLeftPush(null, "value").block())
+                .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> reactive.hGet((String) null, "field").block())
+                .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> reactive.sAdd(null, "value").block())
+                .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> reactive.zAdd(null, "value", 1.0).block())
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    private record InvalidKeyCommand(String name, Function<String, Publisher<?>> command) {}
+
+    @TestFactory
+    Stream<DynamicTest> reactiveListCommandsRejectNullKeyAtBoundary() {
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("range", k -> reactive.lRange(k, 0, -1)),
+                new InvalidKeyCommand("index", k -> reactive.lIndex(k, 0)),
+                new InvalidKeyCommand("left push seconds", k -> reactive.lLeftPush(k, "a", 30L)),
+                new InvalidKeyCommand("left push duration", k -> reactive.lLeftPush(k, "a", Duration.ofSeconds(30))),
+                new InvalidKeyCommand("left push all", k -> reactive.lLeftPushAll(k, List.of("a", "b"))),
+                new InvalidKeyCommand("left push all seconds", k -> reactive.lLeftPushAll(k, List.of("a"), 30L)),
+                new InvalidKeyCommand("left push all duration", k -> reactive.lLeftPushAll(k, List.of("a"), Duration.ofSeconds(30))),
+                new InvalidKeyCommand("left push if present", k -> reactive.lLeftPushx(k, "a")),
+                new InvalidKeyCommand("left push if present seconds", k -> reactive.lLeftPushx(k, "a", 30L)),
+                new InvalidKeyCommand("left push if present duration", k -> reactive.lLeftPushx(k, "a", Duration.ofSeconds(30))),
+                new InvalidKeyCommand("left pop", reactive::lLeftPop),
+                new InvalidKeyCommand("left pop duration", k -> reactive.lLeftPop(k, Duration.ofSeconds(1))),
+                new InvalidKeyCommand("right push duration", k -> reactive.lRightPush(k, "a", Duration.ofSeconds(30))),
+                new InvalidKeyCommand("right push all", k -> reactive.lRightPushAll(k, List.of("a", "b"))),
+                new InvalidKeyCommand("right push all seconds", k -> reactive.lRightPushAll(k, List.of("a"), 30L)),
+                new InvalidKeyCommand("right push all duration", k -> reactive.lRightPushAll(k, List.of("a"), Duration.ofSeconds(30))),
+                new InvalidKeyCommand("right push if present", k -> reactive.lRightPushx(k, "a")),
+                new InvalidKeyCommand("right push if present seconds", k -> reactive.lRightPushx(k, "a", 30L)),
+                new InvalidKeyCommand("right push if present duration", k -> reactive.lRightPushx(k, "a", Duration.ofSeconds(30))),
+                new InvalidKeyCommand("right pop", reactive::lRightPop),
+                new InvalidKeyCommand("right pop duration", k -> reactive.lRightPop(k, Duration.ofSeconds(1))),
+                new InvalidKeyCommand("set index", k -> reactive.lSet(k, 0, "a")),
+                new InvalidKeyCommand("size", reactive::lSize),
+                new InvalidKeyCommand("remove", k -> reactive.lRem(k, 1, "a")),
+                new InvalidKeyCommand("trim", k -> reactive.lTrim(k, 0, 1))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> Mono.from(command.command().apply(null)).block())
+                        .isInstanceOf(RedisOperationException.class)
+                        .hasMessageContaining("Key must not be null")));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> reactiveHashCommandsRejectNullKeyAtBoundary() {
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("decrement int", k -> reactive.hDecr(k, "count", 1)),
+                new InvalidKeyCommand("decrement long", k -> reactive.hDecr(k, "count", 1L)),
+                new InvalidKeyCommand("decrement double", k -> reactive.hDecr(k, "count", 1.0)),
+                new InvalidKeyCommand("delete field", k -> reactive.hDel(k, "field")),
+                new InvalidKeyCommand("get field", k -> reactive.hGet(k, "field")),
+                new InvalidKeyCommand("has field", k -> reactive.hHasKey(k, "field")),
+                new InvalidKeyCommand("get map", k -> reactive.hmGet(k)),
+                new InvalidKeyCommand("get fields", k -> reactive.hMultiGet(k, List.of("field"))),
+                new InvalidKeyCommand("get selected fields", k -> reactive.hmMultiGet(k, List.of("field"))),
+                new InvalidKeyCommand("set map", k -> reactive.hmSet(k, Map.<Object,Object>of("field", "value"))),
+                new InvalidKeyCommand("set map seconds", k -> reactive.hmSet(k, Map.<Object,Object>of("field", "value"), 30L)),
+                new InvalidKeyCommand("set map duration", k -> reactive.hmSet(k, Map.<Object,Object>of("field", "value"), Duration.ofSeconds(30))),
+                new InvalidKeyCommand("set field", k -> reactive.hSet(k, "field", "value")),
+                new InvalidKeyCommand("set field seconds", k -> reactive.hSet(k, "field", "value", 30L)),
+                new InvalidKeyCommand("set field duration", k -> reactive.hSet(k, "field", "value", Duration.ofSeconds(30))),
+                new InvalidKeyCommand("set field if absent", k -> reactive.hSetNX(k, "field", "value")),
+                new InvalidKeyCommand("size", reactive::hSize),
+                new InvalidKeyCommand("increment int", k -> reactive.hIncr(k, "count", 1)),
+                new InvalidKeyCommand("increment int seconds", k -> reactive.hIncr(k, "count", 1, 30L)),
+                new InvalidKeyCommand("increment int duration", k -> reactive.hIncr(k, "count", 1, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("increment long", k -> reactive.hIncr(k, "count", 1L)),
+                new InvalidKeyCommand("increment long seconds", k -> reactive.hIncr(k, "count", 1L, 30L)),
+                new InvalidKeyCommand("increment long duration", k -> reactive.hIncr(k, "count", 1L, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("increment double", k -> reactive.hIncr(k, "count", 1.0)),
+                new InvalidKeyCommand("increment double seconds", k -> reactive.hIncr(k, "count", 1.0, 30L)),
+                new InvalidKeyCommand("increment double duration", k -> reactive.hIncr(k, "count", 1.0, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("field keys", reactive::hKeys)
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> Mono.from(command.command().apply(null)).block())
+                        .isInstanceOf(RedisOperationException.class)
+                        .hasMessageContaining("Key must not be null")));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> reactiveSetAndSortedSetCommandsRejectNullKeyAtBoundary() {
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("set add", k -> reactive.sAdd(k, "a")),
+                new InvalidKeyCommand("set add seconds", k -> reactive.sAddAndExpire(k, 30L, "a")),
+                new InvalidKeyCommand("set add duration", k -> reactive.sAddAndExpire(k, Duration.ofSeconds(30), "a")),
+                new InvalidKeyCommand("set members", reactive::sGet),
+                new InvalidKeyCommand("set difference", k -> reactive.sDiff(k, "other")),
+                new InvalidKeyCommand("set difference store", k -> reactive.sDiffAndStore(k, "other", "target")),
+                new InvalidKeyCommand("set difference collection store", k -> reactive.sDiffAndStore(k, List.of("other"), "target")),
+                new InvalidKeyCommand("set contains", k -> reactive.sHasKey(k, "a")),
+                new InvalidKeyCommand("set intersection", k -> reactive.sIntersect(k, "other")),
+                new InvalidKeyCommand("set intersection collection", k -> reactive.sIntersect(k, List.of("other"))),
+                new InvalidKeyCommand("set intersection store", k -> reactive.sIntersectAndStore(k, "other", "target")),
+                new InvalidKeyCommand("set intersection collection store", k -> reactive.sIntersectAndStore(k, List.of("other"), "target")),
+                new InvalidKeyCommand("set remove", k -> reactive.sRemove(k, "a")),
+                new InvalidKeyCommand("set legacy timed", k -> reactive.sSetAndTime(k, 30L, "a")),
+                new InvalidKeyCommand("set size", reactive::sSize),
+                new InvalidKeyCommand("set union", k -> reactive.sUnion(k, "other")),
+                new InvalidKeyCommand("set union collection", k -> reactive.sUnion(k, List.of("other"))),
+                new InvalidKeyCommand("set union store", k -> reactive.sUnionAndStore(k, "other", "target")),
+                new InvalidKeyCommand("set union collection store", k -> reactive.sUnionAndStore(k, List.of("other"), "target")),
+                new InvalidKeyCommand("sorted add", k -> reactive.zAdd(k, "a", 1.0)),
+                new InvalidKeyCommand("sorted size", reactive::zCard),
+                new InvalidKeyCommand("sorted contains", k -> reactive.zHas(k, "a")),
+                new InvalidKeyCommand("sorted count", k -> reactive.zCount(k, Range.closed(0.0, 2.0))),
+                new InvalidKeyCommand("sorted delete", reactive::zDel),
+                new InvalidKeyCommand("sorted increment", k -> reactive.zIncr(k, "a", 1.0)),
+                new InvalidKeyCommand("sorted increment seconds", k -> reactive.zIncr(k, "a", 1.0, 30L)),
+                new InvalidKeyCommand("sorted increment duration", k -> reactive.zIncr(k, "a", 1.0, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("sorted intersection store", k -> reactive.zIntersectAndStore(k, "other", "target")),
+                new InvalidKeyCommand("sorted intersection collection store", k -> reactive.zIntersectAndStore(k, List.of("other"), "target")),
+                new InvalidKeyCommand("sorted remove", k -> reactive.zRem(k, "a")),
+                new InvalidKeyCommand("sorted remove score", k -> reactive.zRemByScore(k, Range.closed(0.0, 2.0))),
+                new InvalidKeyCommand("sorted range", k -> reactive.zRange(k, Range.closed(0L, 1L))),
+                new InvalidKeyCommand("sorted score range", k -> reactive.zRangeByScore(k, Range.closed(0.0, 2.0))),
+                new InvalidKeyCommand("sorted scored range", k -> reactive.zRangeWithScores(k, Range.closed(0L, 1L))),
+                new InvalidKeyCommand("sorted score and score range", k -> reactive.zRangeByScoreWithScores(k, Range.closed(0.0, 2.0))),
+                new InvalidKeyCommand("sorted reverse range", k -> reactive.zRevrange(k, Range.closed(0L, 1L))),
+                new InvalidKeyCommand("sorted reverse scored range", k -> reactive.zRevrangeWithScores(k, Range.closed(0L, 1L))),
+                new InvalidKeyCommand("sorted reverse score range", k -> reactive.zRevrangeByScore(k, Range.closed(0.0, 2.0))),
+                new InvalidKeyCommand("sorted reverse score and score range", k -> reactive.zRevrangeByScoreWithScores(k, Range.closed(0.0, 2.0))),
+                new InvalidKeyCommand("sorted reverse rank", k -> reactive.zRevRank(k, "a")),
+                new InvalidKeyCommand("sorted score", k -> reactive.zScore(k, "a")),
+                new InvalidKeyCommand("sorted union store", k -> reactive.zUnionAndStore(k, "other", "target")),
+                new InvalidKeyCommand("sorted union collection store", k -> reactive.zUnionAndStore(k, List.of("other"), "target"))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> Mono.from(command.command().apply(null)).block())
+                        .isInstanceOf(RedisOperationException.class)
+                        .hasMessageContaining("Key must not be null")));
     }
 }
