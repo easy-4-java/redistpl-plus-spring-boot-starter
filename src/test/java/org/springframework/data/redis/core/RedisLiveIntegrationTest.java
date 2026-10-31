@@ -1045,4 +1045,36 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.zScore(reactiveKey, "low").block()).isEqualTo(4.0);
         assertTimed(reactiveKey);
     }
+
+    @Test
+    void listPushOverloadsAndMovesPreserveOrderAndExpiry() {
+        String syncKey = key("list-overloads-sync");
+        assertThat(sync.lLeftPush(syncKey, "middle", 30L)).isEqualTo(1L);
+        assertThat(sync.lRightPush(syncKey, "right", Duration.ofSeconds(30))).isEqualTo(2L);
+        assertThat(sync.lLeftPush(syncKey, "left", Duration.ofSeconds(30))).isEqualTo(3L);
+        assertThat(sync.lRightPush(syncKey, "tail", 30L)).isEqualTo(4L);
+        assertThat(sync.lRangeString(syncKey, 0, -1))
+                .containsExactly("left", "middle", "right", "tail");
+        String syncDestination = key("list-overloads-sync-destination");
+        assertThat(sync.lRightPopAndLeftPush(syncKey, syncDestination)).isEqualTo("tail");
+        assertThat(sync.lRangeString(syncKey, 0, -1)).containsExactly("left", "middle", "right");
+        assertThat(sync.lRangeString(syncDestination, 0, -1)).containsExactly("tail");
+        assertThat(sync.getExpire(syncKey)).isBetween(1L, 30L);
+
+        String reactiveKey = key("list-overloads-reactive");
+        assertThat(reactive.lLeftPush(reactiveKey, "middle", 30L).block()).isEqualTo(1L);
+        assertThat(reactive.lRightPush(reactiveKey, "right", Duration.ofSeconds(30)).block()).isEqualTo(2L);
+        assertThat(reactive.lLeftPush(reactiveKey, "left", Duration.ofSeconds(30)).block()).isEqualTo(3L);
+        assertThat(reactive.lRightPush(reactiveKey, "tail", 30L).block()).isEqualTo(4L);
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("left", "middle", "right", "tail");
+        String reactiveDestination = key("list-overloads-reactive-destination");
+        assertThat(reactive.lRightPopAndLeftPush(reactiveKey, reactiveDestination).block())
+                .isEqualTo("tail");
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("left", "middle", "right");
+        assertThat(reactive.lRangeString(reactiveDestination, 0, -1).collectList().block())
+                .containsExactly("tail");
+        assertTimed(reactiveKey);
+    }
 }
