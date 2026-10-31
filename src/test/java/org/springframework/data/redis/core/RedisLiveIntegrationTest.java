@@ -727,7 +727,7 @@ class RedisLiveIntegrationTest {
         List<String> seed = List.of("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9");
         assertThat(reactive.lRightPushAll(secondsKey, seed).block()).isEqualTo(10L);
         assertThat(reactive.lRightPushxAll(secondsKey, List.of("a", "b", "c"), 30L).block())
-                .isEqualTo(3L);
+                .isEqualTo(11L);
         assertThat(reactive.lRangeString(secondsKey, 0, -1).collectList().block())
                 .containsExactly("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "a", "b", "c");
         assertTimed(secondsKey);
@@ -735,10 +735,15 @@ class RedisLiveIntegrationTest {
         String durationKey = key("pushx-duration");
         assertThat(reactive.lRightPushAll(durationKey, seed).block()).isEqualTo(10L);
         assertThat(reactive.lRightPushxAll(durationKey, List.of("a", "b", "c"), Duration.ZERO).block())
-                .isEqualTo(3L);
+                .isEqualTo(11L);
         assertThat(reactive.lRangeString(durationKey, 0, -1).collectList().block())
                 .containsExactly("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "a", "b", "c");
         assertThat(reactive.getExpire(durationKey).block()).isEqualTo(Duration.ZERO);
+
+        String missing = key("pushx-missing");
+        assertThat(reactive.lRightPushxAll(missing, List.of("a", "b", "c"), 30L).block())
+                .isZero();
+        assertThat(reactive.hasKey(missing).block()).isFalse();
     }
 
     @Test
@@ -1600,5 +1605,161 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.unlock(reactiveLock, "owner-a").block(Duration.ofSeconds(5)))
                 .isTrue();
         assertThat(reactive.hasKey(reactiveLock).block()).isFalse();
+    }
+
+    @Test
+    void simpleGlobalLocksRejectSecondAcquisitionUntilRelease() {
+        String syncKey = key("simple-lock-sync");
+        assertThat(sync.tryLock(syncKey, Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.tryLock(syncKey, 30_000L)).isFalse();
+        assertThat(sync.hasKey(syncKey)).isTrue();
+        assertThat(sync.unlock(syncKey)).isTrue();
+        assertThat(sync.hasKey(syncKey)).isFalse();
+
+        String reactiveKey = key("simple-lock-reactive");
+        assertThat(reactive.tryLock(reactiveKey, Duration.ofSeconds(30))
+                .block(Duration.ofSeconds(5))).isTrue();
+        assertThat(reactive.tryLock(reactiveKey, 30_000L).block(Duration.ofSeconds(5)))
+                .isFalse();
+        assertThat(reactive.hasKey(reactiveKey).block()).isTrue();
+        assertThat(reactive.unlock(reactiveKey).block(Duration.ofSeconds(5))).isTrue();
+        assertThat(reactive.hasKey(reactiveKey).block()).isFalse();
+    }
+
+    private record WrongTypeOperation(String name, Consumer<String> invoke) {}
+
+    @TestFactory
+    Stream<DynamicTest> synchronousWrongTypeCommandsPreserveTheOriginalString() {
+        return Stream.of(
+                new WrongTypeOperation("list left push", key -> sync.lLeftPush(key, "a")),
+                new WrongTypeOperation("list right push", key -> sync.lRightPush(key, "a")),
+                new WrongTypeOperation("list range", key -> sync.lRange(key, 0, -1)),
+                new WrongTypeOperation("list index", key -> sync.lIndex(key, 0)),
+                new WrongTypeOperation("list left pop", key -> sync.lLeftPop(key)),
+                new WrongTypeOperation("list right pop", key -> sync.lRightPop(key)),
+                new WrongTypeOperation("list length", key -> sync.lSize(key)),
+                new WrongTypeOperation("hash get", key -> sync.hGet(key, "field")),
+                new WrongTypeOperation("hash put", key -> sync.hSet(key, "field", "value")),
+                new WrongTypeOperation("hash put all", key -> sync.hmSet(key, Map.of("field", "value"))),
+                new WrongTypeOperation("hash has field", key -> sync.hHasKey(key, "field")),
+                new WrongTypeOperation("hash keys", key -> sync.hKeys(key)),
+                new WrongTypeOperation("hash values", key -> sync.hValues(key)),
+                new WrongTypeOperation("set add", key -> sync.sAdd(key, "a")),
+                new WrongTypeOperation("set members", key -> sync.sGet(key)),
+                new WrongTypeOperation("set has member", key -> sync.sHasKey(key, "a")),
+                new WrongTypeOperation("sorted set add", key -> sync.zAdd(key, "a", 1.0)),
+                new WrongTypeOperation("sorted set range", key -> sync.zRange(key, 0, -1)),
+                new WrongTypeOperation("sorted set score", key -> sync.zScore(key, "a"))
+        ).map(operation -> DynamicTest.dynamicTest(operation.name(), () -> {
+            String key = key("wrong-type-" + operation.name().replace(' ', '-'));
+            sync.set(key, "original");
+            assertThatThrownBy(() -> operation.invoke().accept(key))
+                    .isInstanceOf(RedisOperationException.class);
+            assertThat(sync.getString(key)).isEqualTo("original");
+        }));
+    }
+
+    private record JsonOperations(RedisOperationTemplate sync, ReactiveRedisOperationTemplate reactive) {}
+
+    @SuppressWarnings("unchecked")
+    private JsonOperations jsonOperations() {
+        Jackson2JsonRedisSerializer<Object> json = new Jackson2JsonRedisSerializer<>(
+                new ObjectMapper(), Object.class);
+        ObjectProvider<RedisConnectionFactory> factories = mock(ObjectProvider.class);
+        when(factories.getIfAvailable()).thenReturn(connection);
+        ObjectProvider<Jackson2JsonRedisSerializer<Object>> serializers = mock(ObjectProvider.class);
+        when(serializers.getIfAvailable()).thenReturn(json);
+        RedisTemplate<String, Object> configured = new RedisCachingConfiguration()
+                .redisTemplate(factories, serializers);
+        ReactiveRedisTemplate<String, Object> configuredReactive =
+                new RedisReactiveCachingConfiguration().reactiveRedisTemplate(connection, json);
+        return new JsonOperations(new RedisOperationTemplate(configured, new ObjectMapper()),
+                new ReactiveRedisOperationTemplate(configuredReactive, new ObjectMapper()));
+    }
+
+    @Test
+    void jsonConfiguredLuaLockPreservesOwnerBytesAndSetsTtl() {
+        JsonOperations operations = jsonOperations();
+        String syncKey = key("json-lua-lock-sync");
+        String reactiveKey = key("json-lua-lock-reactive");
+        try {
+            assertThat(operations.sync().tryLock(syncKey, "owner-a", 30_000L, 0, 0L)).isTrue();
+            assertThat(operations.sync().getExpire(syncKey)).isBetween(1L, 30L);
+            assertThat(operations.sync().unlock(syncKey, "owner-b")).isFalse();
+            assertThat(operations.sync().hasKey(syncKey)).isTrue();
+            assertThat(operations.sync().unlock(syncKey, "owner-a")).isTrue();
+
+            assertThat(operations.reactive().tryLock(reactiveKey, "owner-a", 30_000L, 0, 0L)
+                    .block(Duration.ofSeconds(5))).isTrue();
+            assertThat(operations.reactive().getExpire(reactiveKey).block())
+                    .isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+            assertThat(operations.reactive().unlock(reactiveKey, "owner-b").block(Duration.ofSeconds(5)))
+                    .isFalse();
+            assertThat(operations.reactive().hasKey(reactiveKey).block()).isTrue();
+            assertThat(operations.reactive().unlock(reactiveKey, "owner-a").block(Duration.ofSeconds(5)))
+                    .isTrue();
+        } finally {
+            operations.sync().del(syncKey, reactiveKey);
+        }
+    }
+
+    @Test
+    void jsonConfiguredLuaCountersKeepNumericArgumentsUnquoted() {
+        JsonOperations operations = jsonOperations();
+        String syncKey = key("json-lua-stock-sync");
+        String reactiveKey = key("json-lua-stock-reactive");
+        try {
+            operations.sync().set(syncKey, 10L);
+            assertThat(operations.sync().luaIncr(syncKey, 2L)).isEqualTo(12L);
+            assertThat(operations.sync().luaDecr(syncKey, 3L)).isEqualTo(9L);
+            assertThat(operations.sync().getLong(syncKey)).isEqualTo(9L);
+
+            operations.reactive().set(reactiveKey, 10L).block();
+            assertThat(operations.reactive().luaIncr(reactiveKey, 2L).block()).isEqualTo(12L);
+            assertThat(operations.reactive().luaDecr(reactiveKey, 3L).block()).isEqualTo(9L);
+            assertThat(operations.reactive().getLong(reactiveKey).block()).isEqualTo(9L);
+
+            String syncHash = key("json-lua-hash-sync");
+            String reactiveHash = key("json-lua-hash-reactive");
+            try {
+                operations.sync().hSet(syncHash, "stock", 10L);
+                assertThat(operations.sync().luaHincr(syncHash, "stock", 2L)).isEqualTo(12L);
+                assertThat(operations.sync().luaHdecr(syncHash, "stock", 3L)).isEqualTo(9L);
+                assertThat(operations.sync().hGetLong(syncHash, "stock")).isEqualTo(9L);
+
+                operations.reactive().hSet(reactiveHash, "stock", "10").block();
+                assertThat(operations.reactive().luaHincr(reactiveHash, "stock", 2L).block()).isEqualTo(12L);
+                assertThat(operations.reactive().luaHdecr(reactiveHash, "stock", 3L).block()).isEqualTo(9L);
+                assertThat(operations.reactive().hGetLong(reactiveHash, "stock").block()).isEqualTo(9L);
+            } finally {
+                operations.sync().del(syncHash, reactiveHash);
+            }
+        } finally {
+            operations.sync().del(syncKey, reactiveKey);
+        }
+    }
+
+    @Test
+    void decimalLuaSentinelsDecodeForStringAndJsonSerializers() {
+        JsonOperations json = jsonOperations();
+        String stringKey = key("decimal-sentinel-string");
+        String jsonKey = key("decimal-sentinel-json");
+        try {
+            assertThat(sync.luaIncr(stringKey, 1.25)).isEqualTo(-3.0);
+            assertThat(reactive.luaIncr(stringKey, 1.25).block()).isEqualTo(-3.0);
+            sync.set(stringKey, "1.5");
+            assertThat(sync.luaDecr(stringKey, 2.0)).isEqualTo(-2.0);
+            assertThat(reactive.luaDecr(stringKey, 0.0).block()).isEqualTo(-4.0);
+            assertThat(sync.getDouble(stringKey)).isEqualTo(1.5);
+
+            assertThat(json.sync().luaIncr(jsonKey, 1.25)).isEqualTo(-3.0);
+            assertThat(json.reactive().luaIncr(jsonKey, 1.25).block()).isEqualTo(-3.0);
+            json.sync().set(jsonKey, 1.5);
+            assertThat(json.sync().luaDecr(jsonKey, 2.0)).isEqualTo(-2.0);
+            assertThat(json.reactive().luaDecr(jsonKey, 0.0).block()).isEqualTo(-4.0);
+            assertThat(json.sync().getDouble(jsonKey)).isEqualTo(1.5);
+        } finally {
+            sync.del(stringKey, jsonKey);
+        }
     }
 }
