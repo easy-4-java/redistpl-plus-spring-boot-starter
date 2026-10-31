@@ -809,4 +809,151 @@ class RedisLiveIntegrationTest {
         assertThat(geo.getSphereDistance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
         assertThat(geo.getWGS84Distance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
     }
+
+    @Test
+    void synchronousHashCounterOverloadsPreserveTypeValueAndExpiry() {
+        String integer = key("hash-int-overloads");
+        assertThat(sync.hIncr(integer, "count", 2)).isEqualTo(2L);
+        assertThat(sync.hIncr(integer, "count", 3, 30L)).isEqualTo(5L);
+        assertThat(sync.hIncr(integer, "count", 4, Duration.ofSeconds(30))).isEqualTo(9L);
+        assertThat(sync.hDecr(integer, "count", 1)).isEqualTo(8L);
+        assertThat(sync.hGetLong(integer, "count")).isEqualTo(8L);
+        assertThat(sync.getExpire(integer)).isBetween(1L, 30L);
+
+        String longCounter = key("hash-long-overloads");
+        assertThat(sync.hIncr(longCounter, "count", 2L)).isEqualTo(2L);
+        assertThat(sync.hIncr(longCounter, "count", 3L, 30L)).isEqualTo(5L);
+        assertThat(sync.hIncr(longCounter, "count", 4L, Duration.ofSeconds(30))).isEqualTo(9L);
+        assertThat(sync.hDecr(longCounter, "count", 2L)).isEqualTo(7L);
+        assertThat(sync.hGetLong(longCounter, "count")).isEqualTo(7L);
+        assertThat(sync.getExpire(longCounter)).isBetween(1L, 30L);
+
+        String decimal = key("hash-decimal-overloads");
+        assertThat(sync.hIncr(decimal, "count", 1.25)).isEqualTo(1.25);
+        assertThat(sync.hIncr(decimal, "count", 1.5, 30L)).isEqualTo(2.75);
+        assertThat(sync.hIncr(decimal, "count", 2.0, Duration.ofSeconds(30))).isEqualTo(4.75);
+        assertThat(sync.hDecr(decimal, "count", 0.5)).isEqualTo(4.25);
+        assertThat(sync.hGetDouble(decimal, "count")).isEqualTo(4.25);
+        assertThat(sync.getExpire(decimal)).isBetween(1L, 30L);
+        assertThatThrownBy(() -> sync.hIncr(decimal, "count", -1L))
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(sync.hGetDouble(decimal, "count")).isEqualTo(4.25);
+    }
+
+    @Test
+    void reactiveHashCounterOverloadsPreserveTypeValueAndExpiry() {
+        String integer = key("reactive-hash-int-overloads");
+        assertThat(reactive.hIncr(integer, "count", 2).block()).isEqualTo(2L);
+        assertThat(reactive.hIncr(integer, "count", 3, 30L).block()).isEqualTo(5L);
+        assertThat(reactive.hIncr(integer, "count", 4, Duration.ofSeconds(30)).block()).isEqualTo(9L);
+        assertThat(reactive.hDecr(integer, "count", 1).block()).isEqualTo(8L);
+        assertThat(reactive.hGetLong(integer, "count").block()).isEqualTo(8L);
+        assertTimed(integer);
+
+        String longCounter = key("reactive-hash-long-overloads");
+        assertThat(reactive.hIncr(longCounter, "count", 2L).block()).isEqualTo(2L);
+        assertThat(reactive.hIncr(longCounter, "count", 3L, 30L).block()).isEqualTo(5L);
+        assertThat(reactive.hIncr(longCounter, "count", 4L, Duration.ofSeconds(30)).block()).isEqualTo(9L);
+        assertThat(reactive.hDecr(longCounter, "count", 2L).block()).isEqualTo(7L);
+        assertThat(reactive.hGetLong(longCounter, "count").block()).isEqualTo(7L);
+        assertTimed(longCounter);
+
+        String decimal = key("reactive-hash-decimal-overloads");
+        assertThat(reactive.hIncr(decimal, "count", 1.25).block()).isEqualTo(1.25);
+        assertThat(reactive.hIncr(decimal, "count", 1.5, 30L).block()).isEqualTo(2.75);
+        assertThat(reactive.hIncr(decimal, "count", 2.0, Duration.ofSeconds(30)).block()).isEqualTo(4.75);
+        assertThat(reactive.hDecr(decimal, "count", 0.5).block()).isEqualTo(4.25);
+        assertThat(reactive.hGetDouble(decimal, "count").block()).isEqualTo(4.25);
+        assertTimed(decimal);
+        assertThatThrownBy(() -> reactive.hIncr(decimal, "count", -1L).block())
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(reactive.hGetDouble(decimal, "count").block()).isEqualTo(4.25);
+    }
+
+    @Test
+    void synchronousValueCounterOverloadsPreserveNumericValuesAndExpiry() {
+        String whole = key("value-whole-counter");
+        assertThat(sync.incr(whole, 2L)).isEqualTo(2L);
+        assertThat(sync.incr(whole, 3L, 30L)).isEqualTo(5L);
+        assertThat(sync.incr(whole, 4L, Duration.ofSeconds(30))).isEqualTo(9L);
+        assertThat(sync.decr(whole, 1L)).isEqualTo(8L);
+        assertThat(sync.decr(whole, 2L, 30L)).isEqualTo(6L);
+        assertThat(sync.decr(whole, 3L, Duration.ofSeconds(30))).isEqualTo(3L);
+        assertThat(sync.getLong(whole)).isEqualTo(3L);
+        assertThat(sync.getExpire(whole)).isBetween(1L, 30L);
+
+        String decimal = key("value-decimal-counter");
+        assertThat(sync.incr(decimal, 1.25)).isEqualTo(1.25);
+        assertThat(sync.incr(decimal, 1.5, 30L)).isEqualTo(2.75);
+        assertThat(sync.incr(decimal, 2.0, Duration.ofSeconds(30))).isEqualTo(4.75);
+        assertThat(sync.decr(decimal, 0.5)).isEqualTo(4.25);
+        assertThat(sync.decr(decimal, 0.25, 30L)).isEqualTo(4.0);
+        assertThat(sync.decr(decimal, 0.5, Duration.ofSeconds(30))).isEqualTo(3.5);
+        assertThat(sync.getDouble(decimal)).isEqualTo(3.5);
+        assertThat(sync.getExpire(decimal)).isBetween(1L, 30L);
+        assertThatThrownBy(() -> sync.incr(whole, -1L)).isInstanceOf(RedisOperationException.class);
+        assertThat(sync.getLong(whole)).isEqualTo(3L);
+    }
+
+    @Test
+    void reactiveValueCounterOverloadsPreserveNumericValuesAndExpiry() {
+        String whole = key("reactive-value-whole-counter");
+        assertThat(reactive.incr(whole, 2L).block()).isEqualTo(2L);
+        assertThat(reactive.incr(whole, 3L, 30L).block()).isEqualTo(5L);
+        assertThat(reactive.incr(whole, 4L, Duration.ofSeconds(30)).block()).isEqualTo(9L);
+        assertThat(reactive.decr(whole, 1L).block()).isEqualTo(8L);
+        assertThat(reactive.decr(whole, 2L, 30L).block()).isEqualTo(6L);
+        assertThat(reactive.decr(whole, 3L, Duration.ofSeconds(30)).block()).isEqualTo(3L);
+        assertThat(reactive.getLong(whole).block()).isEqualTo(3L);
+        assertTimed(whole);
+
+        String decimal = key("reactive-value-decimal-counter");
+        assertThat(reactive.incr(decimal, 1.25).block()).isEqualTo(1.25);
+        assertThat(reactive.incr(decimal, 1.5, 30L).block()).isEqualTo(2.75);
+        assertThat(reactive.incr(decimal, 2.0, Duration.ofSeconds(30)).block()).isEqualTo(4.75);
+        assertThat(reactive.decr(decimal, 0.5).block()).isEqualTo(4.25);
+        assertThat(reactive.decr(decimal, 0.25, 30L).block()).isEqualTo(4.0);
+        assertThat(reactive.decr(decimal, 0.5, Duration.ofSeconds(30)).block()).isEqualTo(3.5);
+        assertThat(reactive.getDouble(decimal).block()).isEqualTo(3.5);
+        assertTimed(decimal);
+        assertThatThrownBy(() -> reactive.incr(whole, -1L).block())
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(reactive.getLong(whole).block()).isEqualTo(3L);
+    }
+
+    @Test
+    void synchronousPushIfPresentBatchActuallyWritesEveryMember() {
+        String right = key("sync-pushx-right");
+        sync.lRightPush(right, "seed");
+        assertThat(sync.lRightPushxAll(right, List.of("a", "b", "c"), 30L)).isEqualTo(3L);
+        assertThat(sync.lRangeString(right, 0, -1)).containsExactly("seed", "a", "b", "c");
+        assertThat(sync.getExpire(right)).isBetween(1L, 30L);
+
+        String left = key("sync-pushx-left");
+        sync.lLeftPush(left, "seed");
+        assertThat(sync.lLeftPushxAll(left, List.of("a", "b", "c"), Duration.ofSeconds(30)))
+                .isEqualTo(3L);
+        assertThat(sync.lRangeString(left, 0, -1)).containsExactly("c", "b", "a", "seed");
+        assertThat(sync.getExpire(left)).isBetween(1L, 30L);
+
+        String rightDuration = key("sync-pushx-right-duration");
+        sync.lRightPush(rightDuration, "seed");
+        assertThat(sync.lRightPushxAll(rightDuration, List.of("a", "b"), Duration.ofSeconds(30)))
+                .isEqualTo(2L);
+        assertThat(sync.lRangeString(rightDuration, 0, -1)).containsExactly("seed", "a", "b");
+        assertThat(sync.getExpire(rightDuration)).isBetween(1L, 30L);
+
+        String leftSeconds = key("sync-pushx-left-seconds");
+        sync.lLeftPush(leftSeconds, "seed");
+        assertThat(sync.lLeftPushxAll(leftSeconds, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.lRangeString(leftSeconds, 0, -1)).containsExactly("b", "a", "seed");
+        assertThat(sync.getExpire(leftSeconds)).isBetween(1L, 30L);
+
+        String missing = key("sync-pushx-missing");
+        assertThat(sync.lRightPushxAll(missing, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.hasKey(missing)).isFalse();
+        assertThat(sync.lLeftPushxAll(leftSeconds, List.<String>of(), Duration.ofSeconds(30)))
+                .isZero();
+        assertThat(sync.lRangeString(leftSeconds, 0, -1)).containsExactly("b", "a", "seed");
+    }
 }
