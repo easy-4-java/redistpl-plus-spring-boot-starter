@@ -1077,4 +1077,34 @@ class RedisLiveIntegrationTest {
                 .containsExactly("tail");
         assertTimed(reactiveKey);
     }
+
+    @Test
+    void listTypedIndicesAndRangesReadStoredNumbersWithoutChangingTheList() {
+        String syncKey = key("list-typed-index-sync");
+        assertThat(sync.lRightPushAll(syncKey, List.of("2", "4", "6"))).isEqualTo(3L);
+        assertThat(sync.lIndexLong(syncKey, 0)).isEqualTo(2L);
+        assertThat(sync.lIndexInteger(syncKey, 1)).isEqualTo(4);
+        assertThat(sync.lIndexDouble(syncKey, -1)).isEqualTo(6.0);
+        assertThat((Integer) sync.lIndexFor(syncKey, 1, value -> Integer.parseInt((String) value) * 2))
+                .isEqualTo(8);
+        assertThat(sync.lRangeInteger(syncKey, 0, -1)).containsExactly(2, 4, 6);
+        assertThat(sync.lRangeFor(syncKey, 0, -1, value -> Integer.parseInt((String) value) + 1))
+                .containsExactly(3, 5, 7);
+        assertThat(sync.glIndexString(syncKey, 20, "missing")).isEqualTo("missing");
+        assertThat(sync.lIndexLong(syncKey, 20, 42L)).isEqualTo(42L);
+        assertThat(sync.lIndexInteger(syncKey, 20, 42)).isEqualTo(42);
+        assertThat(sync.lIndexDouble(syncKey, 20, 42.0)).isEqualTo(42.0);
+        assertThat(sync.lRangeString(syncKey, 0, -1)).containsExactly("2", "4", "6");
+
+        String reactiveKey = key("list-typed-index-reactive");
+        assertThat(reactive.lRightPushAll(reactiveKey, List.of("2", "4", "6")).block()).isEqualTo(3L);
+        assertThat(reactive.lRangeInteger(reactiveKey, 0, -1).collectList().block())
+                .containsExactly(2, 4, 6);
+        assertThat(reactive.lRangeFor(reactiveKey, 0, -1,
+                value -> Integer.parseInt((String) value) + 1).collectList().block())
+                .containsExactly(3, 5, 7);
+        assertThat(reactive.lIndex(reactiveKey, -1).block()).isEqualTo("6");
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("2", "4", "6");
+    }
 }
