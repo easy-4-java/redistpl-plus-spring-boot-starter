@@ -37,16 +37,28 @@ final class LocalRedisFixture implements AutoCloseable {
             }
             throw new IOException("Local Redis did not become ready");
         } catch (Exception failure) {
-            if (started != null) stop(started);
-            deleteDirectory();
+            try {
+                if (started != null) stop(started);
+            } catch (Exception cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            } finally {
+                try {
+                    deleteDirectory();
+                } catch (Exception cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
             throw failure;
         }
     }
 
     @Override
     public void close() throws Exception {
-        stop(process);
-        deleteDirectory();
+        try {
+            stop(process);
+        } finally {
+            deleteDirectory();
+        }
     }
 
     private static void stop(Process process) throws InterruptedException {
