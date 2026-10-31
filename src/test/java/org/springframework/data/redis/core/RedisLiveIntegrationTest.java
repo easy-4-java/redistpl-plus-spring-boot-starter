@@ -10,6 +10,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.Range;
+import org.springframework.data.geo.Point;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
@@ -225,5 +227,78 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.del(first, second).block()).isEqualTo(2L);
         assertThat(reactive.hasKey(first).block()).isFalse();
         assertThat(reactive.hasKey(second).block()).isFalse();
+    }
+
+    @Test
+    void synchronousHashCountersAndSetAlgebra() {
+        String hash = key("hash-count");
+        assertThat(sync.hIncr(hash, "hits", 5L)).isEqualTo(5L);
+        assertThat(sync.hDecr(hash, "hits", 2L)).isEqualTo(3L);
+        assertThat(sync.hGetLong(hash, "hits")).isEqualTo(3L);
+        assertThat(sync.hIncr(hash, "ratio", 1.5)).isEqualTo(1.5);
+        assertThat(sync.hGetDouble(hash, "ratio")).isEqualTo(1.5);
+        String left = key("left");
+        String right = key("right");
+        assertThat(sync.sAdd(left, "a", "b")).isEqualTo(2L);
+        assertThat(sync.sAdd(right, "b", "c")).isEqualTo(2L);
+        assertThat(sync.sDiff(left, right)).containsExactly("a");
+        assertThat(sync.sIntersect(left, right)).containsExactly("b");
+        assertThat(sync.sUnion(left, right)).containsExactlyInAnyOrder("a", "b", "c");
+        assertThat(sync.sSize(left)).isEqualTo(2L);
+    }
+
+    @Test
+    void reactiveHashCountersAndSetAlgebra() {
+        String hash = key("hash-count-reactive");
+        assertThat(reactive.hIncr(hash, "hits", 5L).block()).isEqualTo(5L);
+        assertThat(reactive.hDecr(hash, "hits", 2L).block()).isEqualTo(3L);
+        assertThat(reactive.hGetLong(hash, "hits").block()).isEqualTo(3L);
+        assertThat(reactive.hIncr(hash, "ratio", 1.5).block()).isEqualTo(1.5);
+        assertThat(reactive.hGetDouble(hash, "ratio").block()).isEqualTo(1.5);
+        String left = key("left-reactive");
+        String right = key("right-reactive");
+        assertThat(reactive.sAdd(left, "a", "b").block()).isEqualTo(2L);
+        assertThat(reactive.sAdd(right, "b", "c").block()).isEqualTo(2L);
+        assertThat(reactive.sDiff(left, right).collectList().block()).containsExactly("a");
+        assertThat(reactive.sIntersect(left, right).collectList().block()).containsExactly("b");
+        assertThat(reactive.sUnion(left, right).collectList().block()).containsExactlyInAnyOrder("a", "b", "c");
+        assertThat(reactive.sSize(left).block()).isEqualTo(2L);
+    }
+
+    @Test
+    void reactiveSortedSetChangesRanking() {
+        String key = key("zset-reactive");
+        assertThat(reactive.zAdd(key, "one", 1.0).block()).isTrue();
+        assertThat(reactive.zAdd(key, "two", 2.0).block()).isTrue();
+        assertThat(reactive.zRange(key, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("one", "two");
+        assertThat(reactive.zRem(key, "one").block()).isEqualTo(1L);
+        assertThat(reactive.zRange(key, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("two");
+    }
+
+    @Test
+    void geoQueriesReturnNearbyMembersAndMetricDistance() {
+        GeoTemplate geo = new GeoTemplate(sync.getRedisTemplate());
+        String a = key("geo-a");
+        String b = key("geo-b");
+        assertThat(geo.geoAdd(a, 0.0, 0.0)).isEqualTo(1L);
+        assertThat(geo.geoAdd(new Point(0.01, 0.0), b)).isEqualTo(1L);
+        assertThat(geo.distanceValue(a, b)).isBetween(1000.0, 1200.0);
+        assertThat(geo.getCircleUsersByDistance(a, 2000.0,
+                result -> (String) result.getContent().getName())).contains(a, b);
+        assertThat(geo.getCircleUsersByRadius(a, 2000.0,
+                result -> (String) result.getContent().getName())).contains(a, b);
+        assertThat(geo.getWGS84Distance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+    }
+
+    @Test
+    void luaScriptReadsActualStoredValue() {
+        String key = key("lua");
+        sync.set(key, "value");
+        String script = "return redis.call('GET', KEYS[1])";
+        assertThat(sync.executeLuaScript(script, String.class, List.of(key))).isEqualTo("value");
+        assertThat(reactive.executeLuaScript(script, String.class, List.of(key)).block())
+                .isEqualTo("value");
     }
 }
