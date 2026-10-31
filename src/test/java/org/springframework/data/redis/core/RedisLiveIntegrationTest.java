@@ -1937,4 +1937,48 @@ class RedisLiveIntegrationTest {
                 .isInstanceOf(RuntimeException.class);
         assertThat(reactive.getExpire(badValue).block()).isEqualTo(Duration.ZERO);
     }
+
+    @Test
+    void synchronousTimedSetWritesAndDeletesUseRealServerState() {
+        String seconds = key("set-seconds");
+        assertThat(sync.sAddAndExpire(seconds, 30L, "a", "b")).isEqualTo(2L);
+        assertThat(sync.sGet(seconds)).containsExactlyInAnyOrder("a", "b");
+        assertThat(sync.getExpire(seconds)).isBetween(1L, 30L);
+
+        String duration = key("set-duration");
+        assertThat(sync.sAddAndExpire(duration, Duration.ofSeconds(30), "c")).isEqualTo(1L);
+        assertThat(sync.sGet(duration)).containsExactly("c");
+        assertThat(sync.getExpire(duration)).isBetween(1L, 30L);
+
+        String legacy = key("set-legacy");
+        assertThat(sync.sSetAndTime(legacy, 30L, "d", "e")).isEqualTo(2L);
+        assertThat(sync.sGet(legacy)).containsExactlyInAnyOrder("d", "e");
+        assertThat(sync.getExpire(legacy)).isBetween(1L, 30L);
+        assertThat(sync.sDel(legacy)).isFalse();
+        assertThat(sync.hasKey(legacy)).isFalse();
+    }
+
+    @Test
+    void synchronousHashBatchOverloadsPreserveIdentityAndFieldValues() {
+        String prefix = key("hash-prefix");
+        String first = RedisKey.getKeyStr(prefix, "first");
+        String second = RedisKey.getKeyStr(prefix, "second");
+        sync.hmSet(first, Map.of("id", "first", "count", "11"));
+        sync.hmSet(second, Map.of("id", "second", "count", "22"));
+
+        assertThat(sync.hmGet(List.of("first", "second"), prefix))
+                .containsExactly(Map.of("id", "first", "count", "11"),
+                        Map.of("id", "second", "count", "22"));
+        assertThat(sync.hmMultiGet(first, List.of("count", "missing")))
+                .containsEntry("count", "11").containsEntry("missing", null);
+        assertThat(sync.hmMultiGetFor(first, List.of("count", "missing"), String.class))
+                .containsOnlyKeys("count").containsEntry("count", "11");
+        assertThat(sync.hmMultiGet(List.of(first, second), List.of("count")))
+                .containsExactly(Map.of("count", "11"), Map.of("count", "22"));
+        assertThat(sync.hmMultiGet(List.of(first, second), "id", List.of("id", "count")))
+                .containsKeys("first", "second");
+        assertThat(sync.hGetAll(List.of(first, second)))
+                .containsExactly(Map.of("id", "first", "count", "11"),
+                        Map.of("id", "second", "count", "22"));
+    }
 }
