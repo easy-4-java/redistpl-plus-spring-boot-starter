@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -48,6 +49,7 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import redistpl.plus.spring.boot.RedisCachingConfiguration;
 import redistpl.plus.spring.boot.RedisReactiveCachingConfiguration;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import org.reactivestreams.Publisher;
 
 /** Exercises public operations against a Redis process owned by this test class. */
@@ -2409,6 +2411,50 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.hasKey(sorted).block()).isFalse();
     }
 
+    @Test
+    void reactiveVoidCommandsRejectNonBlockingThreadsBeforeRedisChanges() {
+        String hash = key("guarded-hash"), set = key("guarded-set"), sorted = key("guarded-sorted");
+        reactive.hSet(hash, "field", "value").block();
+        reactive.sAdd(set, "member").block();
+        reactive.zAdd(sorted, "member", 1.0).block();
+        AtomicInteger callbacks = new AtomicInteger();
+        List<Runnable> commands = List.of(
+                () -> reactive.hDel(hash),
+                () -> reactive.hScan(hash, signal -> callbacks.incrementAndGet()),
+                () -> reactive.hScan(hash, "*", signal -> callbacks.incrementAndGet()),
+                () -> reactive.sScan(set, signal -> callbacks.incrementAndGet()),
+                () -> reactive.sScan(set, "*", signal -> callbacks.incrementAndGet()),
+                () -> reactive.zScan(sorted, signal -> callbacks.incrementAndGet()),
+                () -> reactive.zScan(sorted, "*", signal -> callbacks.incrementAndGet())
+        );
+        for (Runnable command : commands) {
+            assertThatThrownBy(() -> Mono.fromRunnable(command).subscribeOn(Schedulers.parallel()).block())
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("blocking-capable thread");
+        }
+        assertThat(callbacks.get()).isZero();
+        assertThat(reactive.hGet(hash, "field").block()).isEqualTo("value");
+        assertThat(reactive.sGet(set).collectList().block()).containsExactly("member");
+        assertThat(reactive.zScore(sorted, "member").block()).isEqualTo(1.0);
+    }
+
+    @Test
+    void reactiveVoidScanDeliversTerminalSignalAndPropagatesConsumerFailure() {
+        String missing = key("empty-scan");
+        AtomicInteger completed = new AtomicInteger();
+        reactive.hScan(missing, signal -> {
+            if (signal.isOnComplete()) completed.incrementAndGet();
+        });
+        assertThat(completed.get()).isEqualTo(1);
+
+        String hash = key("failing-scan");
+        reactive.hSet(hash, "field", "value").block();
+        assertThatThrownBy(() -> reactive.hScan(hash, signal -> {
+            if (signal.isOnNext()) throw new IllegalStateException("consumer rejected");
+        })).isInstanceOf(IllegalStateException.class).hasMessageContaining("consumer rejected");
+        assertThat(reactive.hGet(hash, "field").block()).isEqualTo("value");
+    }
+
     @TestFactory
     Stream<DynamicTest> reactiveCountersRejectNegativeFactorsWithoutCreatingKeys() {
         List<InvalidKeyCommand> commands = List.of(
@@ -2634,5 +2680,43 @@ class RedisLiveIntegrationTest {
                     .isInstanceOf(RedisOperationException.class)
                     .hasMessageContaining("backend unavailable");
         }
+    }
+
+    private record InvalidSyncKeyCommand(String name, Consumer<String> command) {}
+
+    @TestFactory
+    Stream<DynamicTest> synchronousKeyValueAndCounterCommandsRejectNullKeys() {
+        List<InvalidSyncKeyCommand> commands = List.of(
+                new InvalidSyncKeyCommand("has key", sync::hasKey),
+                new InvalidSyncKeyCommand("expire seconds", k -> sync.expire(k, 30L)),
+                new InvalidSyncKeyCommand("expire duration", k -> sync.expire(k, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("expire at", k -> sync.expireAt(k, new Date(System.currentTimeMillis() + 30_000))),
+                new InvalidSyncKeyCommand("get expiry", sync::getExpire),
+                new InvalidSyncKeyCommand("get expiry units", k -> sync.getExpire(k, TimeUnit.SECONDS)),
+                new InvalidSyncKeyCommand("set", k -> sync.set(k, "value")),
+                new InvalidSyncKeyCommand("set seconds", k -> sync.set(k, "value", 30L)),
+                new InvalidSyncKeyCommand("set duration", k -> sync.set(k, "value", Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("set if absent", k -> sync.setNx(k, "value")),
+                new InvalidSyncKeyCommand("set if absent millis", k -> sync.setNx(k, "value", 30_000L)),
+                new InvalidSyncKeyCommand("set if absent units", k -> sync.setNx(k, "value", 30L, TimeUnit.SECONDS)),
+                new InvalidSyncKeyCommand("set if absent duration", k -> sync.setNx(k, "value", Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("get", sync::get),
+                new InvalidSyncKeyCommand("increment long", k -> sync.incr(k, 1L)),
+                new InvalidSyncKeyCommand("increment long seconds", k -> sync.incr(k, 1L, 30L)),
+                new InvalidSyncKeyCommand("increment long duration", k -> sync.incr(k, 1L, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("increment double", k -> sync.incr(k, 1.0)),
+                new InvalidSyncKeyCommand("increment double seconds", k -> sync.incr(k, 1.0, 30L)),
+                new InvalidSyncKeyCommand("increment double duration", k -> sync.incr(k, 1.0, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("decrement long", k -> sync.decr(k, 1L)),
+                new InvalidSyncKeyCommand("decrement long seconds", k -> sync.decr(k, 1L, 30L)),
+                new InvalidSyncKeyCommand("decrement long duration", k -> sync.decr(k, 1L, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("decrement double", k -> sync.decr(k, 1.0)),
+                new InvalidSyncKeyCommand("decrement double seconds", k -> sync.decr(k, 1.0, 30L)),
+                new InvalidSyncKeyCommand("decrement double duration", k -> sync.decr(k, 1.0, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("delete", k -> sync.del(k))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> command.command().accept(null))
+                        .isInstanceOf(RedisOperationException.class)));
     }
 }

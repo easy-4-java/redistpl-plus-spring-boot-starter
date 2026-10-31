@@ -24,6 +24,7 @@ import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Signal;
+import reactor.core.scheduler.Schedulers;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
@@ -46,6 +47,11 @@ import java.util.stream.Stream;
 @SuppressWarnings({ "unchecked", "rawtypes" })
 @Slf4j
 public class ReactiveRedisOperationTemplate {
+	private static void requireBlockingThread() {
+		if (Schedulers.isInNonBlockingThread()) {
+			throw new IllegalStateException("This void Redis operation blocks; call it from a blocking-capable thread");
+		}
+	}
 
 	private static final Long LOCK_SUCCESS = 1L;
     private static final Long LOCK_EXPIRED = -1L;
@@ -1538,12 +1544,9 @@ public class ReactiveRedisOperationTemplate {
 		}
 	}
 
-	/*
-	 * Hash删除: hscan + hdel
-	 *
-	 * @param bigHashKey
-	 */
+	/** Deletes a hash and blocks until Redis completes. Call from a blocking-capable thread. */
 	public void hDel(String bigHashKey) {
+		requireBlockingThread();
 		try {
 			this.del(bigHashKey).block();
 		} catch (Exception e) {
@@ -1950,23 +1953,25 @@ public class ReactiveRedisOperationTemplate {
 	}
 
     /**
-     * <p>H scan.</p>
+     * <p>H scan. Blocks until the consumer has seen the full scan; requires a blocking-capable thread. The consumer receives element, completion, and error signals and must not perform blocking Redis work on the I/O thread.</p>
      * @param bigHashKey
      * @param consumer
      */
 	public void hScan(String bigHashKey, Consumer<? super Signal<Entry<Object, Object>>> consumer) {
+		requireBlockingThread();
 		getHashOperations()
 			.scan(bigHashKey, ScanOptions.scanOptions().count(Long.MAX_VALUE).build())
 			.doOnEach(consumer).blockLast();
 	}
 
     /**
-     * <p>H scan.</p>
+     * <p>H scan. Blocks until the consumer has seen the full scan; requires a blocking-capable thread. The consumer receives element, completion, and error signals and must not perform blocking Redis work on the I/O thread.</p>
      * @param bigHashKey
      * @param pattern
      * @param consumer
      */
 	public void hScan(String bigHashKey, String pattern, Consumer<? super Signal<Entry<Object, Object>>> consumer) {
+		requireBlockingThread();
 		getHashOperations()
 			.scan(bigHashKey, ScanOptions.scanOptions().count(Long.MAX_VALUE).match(pattern).build())
 			.doOnEach(consumer).blockLast();
@@ -2597,11 +2602,12 @@ public class ReactiveRedisOperationTemplate {
 	}
 
     /**
-     * <p>S scan.</p>
+     * <p>S scan. Blocks until the consumer has seen the full scan; requires a blocking-capable thread. The consumer receives element, completion, and error signals and must not perform blocking Redis work on the I/O thread.</p>
      * @param bigSetKey
      * @param consumer
      */
 	public void sScan(String bigSetKey, Consumer<? super Signal<ByteBuffer>> consumer) {
+		requireBlockingThread();
 		reactiveRedisTemplate.execute((ReactiveRedisConnection redisConnection) -> {
 			return redisConnection.setCommands()
 					.sScan(getRawKey(bigSetKey), ScanOptions.scanOptions().count(Long.MAX_VALUE).build())
@@ -2610,12 +2616,13 @@ public class ReactiveRedisOperationTemplate {
 	}
 
     /**
-     * <p>S scan.</p>
+     * <p>S scan. Blocks until the consumer has seen the full scan; requires a blocking-capable thread. The consumer receives element, completion, and error signals and must not perform blocking Redis work on the I/O thread.</p>
      * @param bigSetKey
      * @param pattern
      * @param consumer
      */
 	public void sScan(String bigSetKey, String pattern, Consumer<? super Signal<ByteBuffer>> consumer) {
+		requireBlockingThread();
 		reactiveRedisTemplate.execute((ReactiveRedisConnection redisConnection) -> {
 			return redisConnection.setCommands()
 					.sScan(getRawKey(bigSetKey), ScanOptions.scanOptions().count(Long.MAX_VALUE).match(pattern).build())
@@ -3320,23 +3327,25 @@ public class ReactiveRedisOperationTemplate {
 	}
 
     /**
-     * <p>Z scan.</p>
+     * <p>Z scan. Blocks until the consumer has seen the full scan; requires a blocking-capable thread. The consumer receives element, completion, and error signals and must not perform blocking Redis work on the I/O thread.</p>
      * @param bigZsetKey
      * @param consumer
      */
 	public void zScan(String bigZsetKey, Consumer<? super Signal<TypedTuple<Object>>> consumer) {
+		requireBlockingThread();
 		reactiveRedisTemplate.opsForZSet()
 			.scan(bigZsetKey, ScanOptions.scanOptions().count(Long.MAX_VALUE).build())
 			.doOnEach(consumer).blockLast();
 	}
 
     /**
-     * <p>Z scan.</p>
+     * <p>Z scan. Blocks until the consumer has seen the full scan; requires a blocking-capable thread. The consumer receives element, completion, and error signals and must not perform blocking Redis work on the I/O thread.</p>
      * @param bigZsetKey
      * @param pattern
      * @param consumer
      */
 	public void zScan(String bigZsetKey, String pattern, Consumer<? super Signal<TypedTuple<Object>>> consumer) {
+		requireBlockingThread();
 		reactiveRedisTemplate.opsForZSet()
 		.scan(bigZsetKey, ScanOptions.scanOptions().match(pattern).count(Long.MAX_VALUE).build())
 		.doOnEach(consumer).blockLast();
