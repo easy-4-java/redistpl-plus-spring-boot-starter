@@ -1545,10 +1545,7 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public void hDel(String bigHashKey) {
 		try {
-			this.hScan(bigHashKey, (entry) -> {
-				this.hDel(bigHashKey, entry.get().getKey());
-			});
-			this.del(bigHashKey);
+			this.del(bigHashKey).block();
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -1960,7 +1957,7 @@ public class ReactiveRedisOperationTemplate {
 	public void hScan(String bigHashKey, Consumer<? super Signal<Entry<Object, Object>>> consumer) {
 		getHashOperations()
 			.scan(bigHashKey, ScanOptions.scanOptions().count(Long.MAX_VALUE).build())
-			.doOnEach(consumer);
+			.doOnEach(consumer).blockLast();
 	}
 
     /**
@@ -1972,7 +1969,7 @@ public class ReactiveRedisOperationTemplate {
 	public void hScan(String bigHashKey, String pattern, Consumer<? super Signal<Entry<Object, Object>>> consumer) {
 		getHashOperations()
 			.scan(bigHashKey, ScanOptions.scanOptions().count(Long.MAX_VALUE).match(pattern).build())
-			.doOnEach(consumer);
+			.doOnEach(consumer).blockLast();
 	}
 
 	/*
@@ -2313,9 +2310,6 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public Mono<Boolean> sDel(String bigSetKey) {
 		try {
-			this.sScan(bigSetKey, (value) -> {
-				getSetOperations().remove(bigSetKey, getDeserializeValue(value.get()));
-			});
 			return reactiveRedisTemplate.delete(bigSetKey).map(ct -> ct > 0);
 		} catch (Exception e) {
 			return monoError(e);
@@ -2612,7 +2606,7 @@ public class ReactiveRedisOperationTemplate {
 			return redisConnection.setCommands()
 					.sScan(getRawKey(bigSetKey), ScanOptions.scanOptions().count(Long.MAX_VALUE).build())
 					.doOnEach(consumer);
-		});
+		}).blockLast();
 	}
 
     /**
@@ -2626,7 +2620,7 @@ public class ReactiveRedisOperationTemplate {
 			return redisConnection.setCommands()
 					.sScan(getRawKey(bigSetKey), ScanOptions.scanOptions().count(Long.MAX_VALUE).match(pattern).build())
 					.doOnEach(consumer);
-		});
+		}).blockLast();
 	}
 
 	/*
@@ -2836,9 +2830,6 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public Mono<Boolean> zDel(String bigZsetKey) {
 		try {
-			this.zScan(bigZsetKey, (tuple) -> {
-				this.zRem(bigZsetKey, tuple.get().getValue());
-			});
 			return reactiveRedisTemplate.delete(bigZsetKey).map(ct -> ct > 0);
 		} catch (Exception e) {
 			return monoError(e);
@@ -3336,7 +3327,7 @@ public class ReactiveRedisOperationTemplate {
 	public void zScan(String bigZsetKey, Consumer<? super Signal<TypedTuple<Object>>> consumer) {
 		reactiveRedisTemplate.opsForZSet()
 			.scan(bigZsetKey, ScanOptions.scanOptions().count(Long.MAX_VALUE).build())
-			.doOnEach(consumer);
+			.doOnEach(consumer).blockLast();
 	}
 
     /**
@@ -3348,7 +3339,7 @@ public class ReactiveRedisOperationTemplate {
 	public void zScan(String bigZsetKey, String pattern, Consumer<? super Signal<TypedTuple<Object>>> consumer) {
 		reactiveRedisTemplate.opsForZSet()
 		.scan(bigZsetKey, ScanOptions.scanOptions().match(pattern).count(Long.MAX_VALUE).build())
-		.doOnEach(consumer);
+		.doOnEach(consumer).blockLast();
 	}
 
     /**

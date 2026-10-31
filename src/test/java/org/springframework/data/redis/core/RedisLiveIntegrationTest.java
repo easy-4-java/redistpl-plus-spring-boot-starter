@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
+import java.nio.ByteBuffer;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -2124,7 +2125,6 @@ class RedisLiveIntegrationTest {
                 new InvalidKeyCommand("sorted size", reactive::zCard),
                 new InvalidKeyCommand("sorted contains", k -> reactive.zHas(k, "a")),
                 new InvalidKeyCommand("sorted count", k -> reactive.zCount(k, Range.closed(0.0, 2.0))),
-                new InvalidKeyCommand("sorted delete", reactive::zDel),
                 new InvalidKeyCommand("sorted increment", k -> reactive.zIncr(k, "a", 1.0)),
                 new InvalidKeyCommand("sorted increment seconds", k -> reactive.zIncr(k, "a", 1.0, 30L)),
                 new InvalidKeyCommand("sorted increment duration", k -> reactive.zIncr(k, "a", 1.0, Duration.ofSeconds(30))),
@@ -2187,6 +2187,9 @@ class RedisLiveIntegrationTest {
         assertThatThrownBy(() -> reactive.setNX(null, "value").block())
                 .isInstanceOf(RedisOperationException.class)
                 .hasMessageContaining("key must not be empty");
+        assertThatThrownBy(() -> reactive.zDel(null).block())
+                .isInstanceOf(RedisOperationException.class)
+                .hasMessageContaining("Keys must not contain null elements");
     }
 
     @Test
@@ -2322,5 +2325,82 @@ class RedisLiveIntegrationTest {
         reactive.set(second, "b").block();
         assertThat(reactive.getValueKeyByPrefix(prefix).collectList().block())
                 .containsExactlyInAnyOrder(first, second);
+    }
+
+    @Test
+    void reactiveSerializerHelpersRoundTripKeysValuesAndHashFields() {
+        ByteBuffer keyBytes = reactive.getRawKey("test:key");
+        ByteBuffer valueBytes = reactive.getRawValue("value");
+        ByteBuffer hashKeyBytes = reactive.getRawHashKey("field");
+        ByteBuffer hashValueBytes = reactive.getRawHashValue("hash-value");
+        assertThat(reactive.getObjectMapper()).isNotNull();
+        assertThat(reactive.getDeserializeKey(keyBytes)).isEqualTo("test:key");
+        assertThat(reactive.getDeserializeKeys(Set.of(keyBytes))).containsExactly("test:key");
+        assertThat(reactive.getDeserializeValue(valueBytes)).isEqualTo("value");
+        assertThat(reactive.getDeserializeString(valueBytes)).isEqualTo("value");
+        assertThat(reactive.getDeserializeValues(reactive.getRawValues(List.of("a", "b"))))
+                .containsExactly("a", "b");
+        assertThat(reactive.getDeserializeValues(Set.of(valueBytes))).containsExactly("value");
+        assertThat((String) reactive.getDeserializeHashKey(hashKeyBytes)).isEqualTo("field");
+        assertThat((String) reactive.getDeserializeHashValue(hashValueBytes)).isEqualTo("hash-value");
+        assertThat(reactive.<String>getDeserializeHashKeys(Set.of(hashKeyBytes))).containsExactly("field");
+        assertThat(reactive.<String>getDeserializeHashValues(List.of(hashValueBytes))).containsExactly("hash-value");
+        assertThat(reactive.getRawHashKeys("field")).hasSize(1);
+        assertThat(reactive.getRawValue(valueBytes)).isSameAs(valueBytes);
+    }
+
+    @Test
+    void reactiveServerMetadataReadsFromTheOwnedRedisProcess() {
+        long now = reactive.timeNow().block();
+        assertThat(now).isPositive();
+        assertThat(reactive.period(now + 10_000).block()).isBetween(1L, 10_000L);
+        assertThat(reactive.dbSize().block()).isNotNegative();
+        assertThat(reactive.lastSave().block()).isNotNegative();
+    }
+
+    @Test
+    void reactiveVoidHashScanAndDeleteActuallyRun() {
+        String hash = key("reactive-void-hash");
+        reactive.hmSet(hash, Map.<Object, Object>of("a", "1", "b", "2")).block();
+        List<Object> fields = new ArrayList<>();
+        reactive.hScan(hash, signal -> {
+            if (signal.isOnNext()) fields.add(signal.get().getKey());
+        });
+        assertThat(fields).containsExactlyInAnyOrder("a", "b");
+
+        List<Object> matched = new ArrayList<>();
+        reactive.hScan(hash, "a", signal -> {
+            if (signal.isOnNext()) matched.add(signal.get().getKey());
+        });
+        assertThat(matched).containsExactly("a");
+        reactive.hDel(hash);
+        assertThat(reactive.hasKey(hash).block()).isFalse();
+    }
+
+    @Test
+    void reactiveVoidSetAndSortedScansVisitStoredMembers() {
+        String set = key("reactive-void-set");
+        reactive.sAdd(set, "a", "b").block();
+        List<Object> setMembers = new ArrayList<>();
+        reactive.sScan(set, "a", signal -> {
+            if (signal.isOnNext()) setMembers.add(reactive.getDeserializeValue(signal.get()));
+        });
+        assertThat(setMembers).containsExactly("a");
+
+        String sorted = key("reactive-void-sorted");
+        reactive.zAdd(sorted, "a", 1.0).block();
+        reactive.zAdd(sorted, "b", 2.0).block();
+        List<Object> members = new ArrayList<>();
+        reactive.zScan(sorted, signal -> {
+            if (signal.isOnNext()) members.add(signal.get().getValue());
+        });
+        assertThat(members).containsExactlyInAnyOrder("a", "b");
+        List<Object> matched = new ArrayList<>();
+        reactive.zScan(sorted, "b", signal -> {
+            if (signal.isOnNext()) matched.add(signal.get().getValue());
+        });
+        assertThat(matched).containsExactly("b");
+        assertThat(reactive.zDel(sorted).block()).isTrue();
+        assertThat(reactive.hasKey(sorted).block()).isFalse();
     }
 }
