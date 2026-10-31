@@ -1869,4 +1869,41 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.zRemByScore(a, Range.closed(2.0, 2.0)).block()).isEqualTo(1L);
         assertThat(reactive.zCard(a).block()).isZero();
     }
+
+    @Test
+    void synchronousBlockingListOverloadsConsumeSeededElements() {
+        String left = key("blocking-left"), right = key("blocking-right");
+        sync.lRightPushAll(left, List.of("a", "b"));
+        sync.lRightPushAll(right, List.of("c", "d"));
+        assertThat(sync.lLeftPop(left, 1L, TimeUnit.SECONDS)).isEqualTo("a");
+        assertThat(sync.lLeftPop(left, Duration.ofSeconds(1))).isEqualTo("b");
+        assertThat(sync.lRightPop(right, 1L, TimeUnit.SECONDS)).isEqualTo("d");
+        assertThat(sync.lRightPop(right, Duration.ofSeconds(1))).isEqualTo("c");
+        assertThat(sync.hasKey(left)).isFalse();
+        assertThat(sync.hasKey(right)).isFalse();
+
+        String first = key("blocking-move-first"), second = key("blocking-move-second");
+        String third = key("blocking-move-third"), destination = key("blocking-move-destination");
+        sync.lRightPush(first, "one");
+        sync.lRightPush(second, "two");
+        sync.lRightPush(third, "three");
+        assertThat(sync.lRightPopAndLeftPush(first, destination)).isEqualTo("one");
+        assertThat(sync.lRightPopAndLeftPush(second, destination, 1L, TimeUnit.SECONDS)).isEqualTo("two");
+        assertThat(sync.lRightPopAndLeftPush(third, destination, Duration.ofSeconds(1))).isEqualTo("three");
+        assertThat(sync.lRangeString(destination, 0, -1)).containsExactly("three", "two", "one");
+        assertThat(sync.hasKey(first)).isFalse();
+        assertThat(sync.hasKey(second)).isFalse();
+        assertThat(sync.hasKey(third)).isFalse();
+    }
+
+    @Test
+    void listPopAndRemoveAlsoRemovesRemainingDuplicateValues() {
+        String left = key("pop-and-remove-left"), right = key("pop-and-remove-right");
+        sync.lRightPushAll(left, List.of("a", "b", "a"));
+        sync.lRightPushAll(right, List.of("x", "y", "x"));
+        assertThat(sync.lLeftPopAndLrem(left)).isEqualTo("a");
+        assertThat(sync.lRightPopAndLrem(right)).isEqualTo("x");
+        assertThat(sync.lRangeString(left, 0, -1)).containsExactly("b");
+        assertThat(sync.lRangeString(right, 0, -1)).containsExactly("y");
+    }
 }
