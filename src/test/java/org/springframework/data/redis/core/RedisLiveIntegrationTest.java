@@ -1981,4 +1981,31 @@ class RedisLiveIntegrationTest {
                 .containsExactly(Map.of("id", "first", "count", "11"),
                         Map.of("id", "second", "count", "22"));
     }
+
+    @Test
+    void numericSetRandomOverloadsReturnOnlyStoredMembers() {
+        String set = key("random-numeric-set");
+        assertThat(sync.sAdd(set, "11", "22", "33")).isEqualTo(3L);
+        assertThat(sync.sRandomString(set, 5)).hasSize(5).allMatch(Set.of("11", "22", "33")::contains);
+        assertThat(sync.sRandomLong(set, 5)).hasSize(5).allMatch(Set.of(11L, 22L, 33L)::contains);
+        assertThat(sync.sRandomInteger(set, 5)).hasSize(5).allMatch(Set.of(11, 22, 33)::contains);
+        assertThat(sync.sRandomDouble(set, 5)).hasSize(5).allMatch(Set.of(11.0, 22.0, 33.0)::contains);
+        assertThat(sync.sRandomFor(set, 5, String.class)).hasSize(5).allMatch(Set.of("11", "22", "33")::contains);
+        assertThat(sync.sRandomDistinctString(set, 3)).containsExactlyInAnyOrder("11", "22", "33");
+        assertThat(sync.sRandomDistinctLong(set, 3)).containsExactlyInAnyOrder(11L, 22L, 33L);
+        assertThat(sync.sRandomDistinctInteger(set, 3)).containsExactlyInAnyOrder(11, 22, 33);
+        assertThat(sync.sRandomDistinctDouble(set, 3)).containsExactlyInAnyOrder(11.0, 22.0, 33.0);
+        assertThat(sync.sRandomDistinctFor(set, 3, String.class)).containsExactlyInAnyOrder("11", "22", "33");
+        assertThat(sync.sGet(set)).containsExactlyInAnyOrder("11", "22", "33");
+    }
+
+    @Test
+    void reactiveTimedSetAndDeleteOperationsExposeStoredState() {
+        String set = key("reactive-set-legacy");
+        assertThat(reactive.sSetAndTime(set, 30L, "one", "two").block()).isEqualTo(2L);
+        assertThat(reactive.sGet(set).collectList().block()).containsExactlyInAnyOrder("one", "two");
+        assertTimed(set);
+        assertThat(reactive.sDel(set).block()).isTrue();
+        assertThat(reactive.hasKey(set).block()).isFalse();
+    }
 }
