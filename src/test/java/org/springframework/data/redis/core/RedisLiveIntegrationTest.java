@@ -2993,4 +2993,50 @@ class RedisLiveIntegrationTest {
         }
         assertThat(received.get(3, TimeUnit.SECONDS).getMessage()).isEqualTo("payload");
     }
+
+    @Test
+    void synchronousTypedListAndHashReadsConvertStoredValues() {
+        String list = key("sync-typed-pop"), hash = key("sync-typed-hash");
+        sync.lRightPushAll(list, List.of("1", "2", "3", "4"));
+        assertThat(sync.lLeftPop(list, 2, Integer.class)).containsExactly(1, 2);
+        assertThat(sync.lLeftPop(list, 2, new TypeReference<Integer>() {})).containsExactly(3, 4);
+        sync.hSet(hash, "a", "1");
+        sync.hSet(hash, "b", "2");
+        assertThat(sync.hmGetFor(hash, new TypeReference<Map<String, Integer>>() {}))
+                .containsEntry("a", 1).containsEntry("b", 2);
+        assertThat(sync.hmMultiGetFor(hash, List.of("a", "b", "missing"), new TypeReference<Integer>() {}))
+                .containsEntry("a", 1).containsEntry("b", 2).doesNotContainKey("missing");
+        assertThat(sync.hmMultiGetFor(hash, List.of("a"), Integer.class)).containsEntry("a", 1);
+        assertThat(sync.hmGetFor(key("sync-missing-hash"), new TypeReference<Map<String, Integer>>() {})).isNull();
+    }
+
+    @Test
+    void synchronousScanPatternOverloadsVisitOnlyMatchingStoredMembers() {
+        String hash = key("sync-scan-hash"), set = key("sync-scan-set"), sorted = key("sync-scan-zset");
+        sync.hSet(hash, "keep:a", "one");
+        sync.hSet(hash, "drop:b", "two");
+        sync.sAdd(set, "keep:a", "drop:b");
+        sync.zAdd(sorted, "keep:a", 1.0);
+        sync.zAdd(sorted, "drop:b", 2.0);
+        List<Map.Entry<Object, Object>> hashEntries = new ArrayList<>();
+        sync.hScan(hash, "keep:*", hashEntries::add);
+        assertThat(hashEntries).containsExactly(Map.entry("keep:a", "one"));
+        hashEntries.clear();
+        sync.hScan(hash, ScanOptions.scanOptions().match("drop:*").build(), hashEntries::add);
+        assertThat(hashEntries).containsExactly(Map.entry("drop:b", "two"));
+        List<String> setMembers = new ArrayList<>();
+        sync.sScan(set, "keep:*", bytes -> setMembers.add(new String(bytes, java.nio.charset.StandardCharsets.UTF_8)));
+        assertThat(setMembers).containsExactly("keep:a");
+        setMembers.clear();
+        sync.sScan(set, ScanOptions.scanOptions().match("drop:*").build(),
+                bytes -> setMembers.add(new String(bytes, java.nio.charset.StandardCharsets.UTF_8)));
+        assertThat(setMembers).containsExactly("drop:b");
+        List<String> sortedMembers = new ArrayList<>();
+        sync.zScan(sorted, "keep:*", tuple -> sortedMembers.add(new String(tuple.getValue(), java.nio.charset.StandardCharsets.UTF_8)));
+        assertThat(sortedMembers).containsExactly("keep:a");
+        sortedMembers.clear();
+        sync.zScan(sorted, ScanOptions.scanOptions().match("drop:*").build(),
+                tuple -> sortedMembers.add(new String(tuple.getValue(), java.nio.charset.StandardCharsets.UTF_8)));
+        assertThat(sortedMembers).containsExactly("drop:b");
+    }
 }
