@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -32,7 +33,11 @@ import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactor
 import org.springframework.data.redis.connection.DataType;
 import org.springframework.data.redis.connection.Limit;
 import org.springframework.data.redis.connection.zset.Aggregate;
+import org.springframework.data.redis.connection.zset.DefaultTuple;
 import org.springframework.data.redis.connection.zset.Weights;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
@@ -2402,5 +2407,130 @@ class RedisLiveIntegrationTest {
         assertThat(matched).containsExactly("b");
         assertThat(reactive.zDel(sorted).block()).isTrue();
         assertThat(reactive.hasKey(sorted).block()).isFalse();
+    }
+
+    @TestFactory
+    Stream<DynamicTest> reactiveCountersRejectNegativeFactorsWithoutCreatingKeys() {
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("increment long", k -> reactive.incr(k, -1L)),
+                new InvalidKeyCommand("increment long seconds", k -> reactive.incr(k, -1L, 30L)),
+                new InvalidKeyCommand("increment long duration", k -> reactive.incr(k, -1L, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("increment double", k -> reactive.incr(k, -1.0)),
+                new InvalidKeyCommand("increment double seconds", k -> reactive.incr(k, -1.0, 30L)),
+                new InvalidKeyCommand("increment double duration", k -> reactive.incr(k, -1.0, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("decrement long", k -> reactive.decr(k, -1L)),
+                new InvalidKeyCommand("decrement long seconds", k -> reactive.decr(k, -1L, 30L)),
+                new InvalidKeyCommand("decrement long duration", k -> reactive.decr(k, -1L, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("decrement double", k -> reactive.decr(k, -1.0)),
+                new InvalidKeyCommand("decrement double seconds", k -> reactive.decr(k, -1.0, 30L)),
+                new InvalidKeyCommand("decrement double duration", k -> reactive.decr(k, -1.0, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("hash increment int", k -> reactive.hIncr(k, "field", -1)),
+                new InvalidKeyCommand("hash increment int seconds", k -> reactive.hIncr(k, "field", -1, 30L)),
+                new InvalidKeyCommand("hash increment int duration", k -> reactive.hIncr(k, "field", -1, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("hash increment long", k -> reactive.hIncr(k, "field", -1L)),
+                new InvalidKeyCommand("hash increment long seconds", k -> reactive.hIncr(k, "field", -1L, 30L)),
+                new InvalidKeyCommand("hash increment long duration", k -> reactive.hIncr(k, "field", -1L, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("hash increment double", k -> reactive.hIncr(k, "field", -1.0)),
+                new InvalidKeyCommand("hash increment double seconds", k -> reactive.hIncr(k, "field", -1.0, 30L)),
+                new InvalidKeyCommand("hash increment double duration", k -> reactive.hIncr(k, "field", -1.0, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("hash decrement int", k -> reactive.hDecr(k, "field", -1)),
+                new InvalidKeyCommand("hash decrement long", k -> reactive.hDecr(k, "field", -1L)),
+                new InvalidKeyCommand("hash decrement double", k -> reactive.hDecr(k, "field", -1.0))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () -> {
+            String key = key("negative-factor");
+            assertThatThrownBy(() -> Mono.from(command.command().apply(key)).block())
+                    .isInstanceOf(RedisOperationException.class).hasMessageContaining("必须>=0");
+            assertThat(reactive.hasKey(key).block()).isFalse();
+        }));
+    }
+
+    @Test
+    void reactiveEmptyInputsAndInvalidExpiryDoNotCreateKeys() {
+        String key = key("reactive-empty-inputs");
+        assertThat(reactive.expire(key, (Duration) null).block()).isFalse();
+        assertThat(reactive.expireAt(key, (java.time.Instant) null).block()).isFalse();
+        assertThat(reactive.set(key, "value", (Duration) null).block()).isFalse();
+        assertThat(reactive.set(key, "value", Duration.ofSeconds(-1)).block()).isFalse();
+        assertThat(reactive.hasKey(key).block()).isFalse();
+        assertThat(reactive.mGet((String) null).block()).isNull();
+        assertThat(reactive.mGet(List.<String>of()).block()).isNull();
+        assertThat(reactive.mGet(List.<Object>of(), "prefix").block()).isNull();
+        assertThat(reactive.del().block()).isZero();
+        assertThat(reactive.lLeftPop(key, 0).collectList().block()).isEmpty();
+        assertThat(reactive.hmGet(List.<String>of()).collectList().block()).isEmpty();
+        assertThat(reactive.hmGet(List.<String>of(), "prefix").collectList().block()).isEmpty();
+        assertThat(reactive.hmMultiGet(List.<String>of(), List.<Object>of("field")).collectList().block()).isEmpty();
+        assertThat(reactive.hmMultiGet(List.<String>of(), "id", List.<Object>of("field")).block()).isNull();
+        assertThat(reactive.hmMultiGetAll(List.<String>of()).collectList().block()).isEmpty();
+        assertThat(reactive.hmMultiGetAll(List.<String>of(), "prefix").collectList().block()).isEmpty();
+        assertThat(reactive.hmMultiSet(key, List.<Object>of(), "value").block()).isFalse();
+        assertThat(reactive.hasKey(key).block()).isFalse();
+    }
+
+    @Test
+    void reactiveCollectionListPushOverloadsPreserveOrderAndExpiry() {
+        String left = key("reactive-list-collection-left");
+        assertThat(reactive.lLeftPush(left, List.of("a", "b"), 30L).block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(left, 0, -1).collectList().block()).containsExactly("b", "a");
+        assertTimed(left);
+        assertThat(reactive.lLeftPushx(left, List.of("c", "d"), Duration.ofSeconds(30)).block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(left, 0, -1).collectList().block()).containsExactly("d", "c", "b", "a");
+
+        String right = key("reactive-list-collection-right");
+        assertThat(reactive.lRightPush(right, List.of("a", "b"), Duration.ofSeconds(30)).block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(right, 0, -1).collectList().block()).containsExactly("a", "b");
+        assertTimed(right);
+        assertThat(reactive.lRightPushx(right, List.of("c", "d"), 30L).block()).isEqualTo(3L);
+        assertThat(reactive.lRangeString(right, 0, -1).collectList().block()).containsExactly("a", "b", "c", "d");
+    }
+
+    @Test
+    void reactiveTypedClassConversionsAndTupleDecodingPreserveValues() {
+        String value = key("reactive-class-value");
+        reactive.set(value, "12").block();
+        assertThat(reactive.getFor(value, String.class).block()).isEqualTo("12");
+        assertThat(reactive.mGetFor(List.of(value), String.class).block()).containsExactly("12");
+
+        String list = key("reactive-class-list");
+        reactive.lRightPushAll(list, List.of("a", "b")).block();
+        assertThat(reactive.lRangeFor(list, 0, -1, String.class).collectList().block())
+                .containsExactly("a", "b");
+
+        String first = key("reactive-class-hash-first"), second = key("reactive-class-hash-second");
+        reactive.hSet(first, "field", "a").block();
+        reactive.hSet(second, "field", "b").block();
+        assertThat(reactive.hGetFor(first, "field", String.class).block()).isEqualTo("a");
+        assertThat(reactive.hGetFor(List.of(first, second), "field", String.class).collectList().block())
+                .containsExactlyInAnyOrder("a", "b");
+
+        var tuple = reactive.getDeserializeTuple(new DefaultTuple("member".getBytes(java.nio.charset.StandardCharsets.UTF_8), 2.5));
+        assertThat(tuple.getValue()).isEqualTo("member");
+        assertThat(tuple.getScore()).isEqualTo(2.5);
+    }
+
+    @Test
+    void reactiveLuaResourceAndScriptObjectsReadStoredValue() {
+        String key = key("reactive-lua-resource");
+        reactive.set(key, "stored").block();
+        String source = "return redis.call('GET', KEYS[1])";
+        assertThat(reactive.executeLuaScript(new ByteArrayResource(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                String.class, List.of(key)).block()).isEqualTo("stored");
+        assertThat(reactive.executeLuaScript(RedisScript.of(source, String.class), List.of(key)).block())
+                .isEqualTo("stored");
+    }
+
+    @Test
+    void reactivePublishAndSubscribeDeliversMessageOnOwnedRedis() throws Exception {
+        String channel = key("reactive-channel");
+        var received = CompletableFuture.supplyAsync(() ->
+                reactive.listenTo(new ChannelTopic(channel)).next().block(Duration.ofSeconds(3)));
+        long subscribers = 0;
+        for (int attempt = 0; attempt < 30 && subscribers == 0; attempt++) {
+            subscribers = reactive.sendMessage(channel, "payload").block();
+            if (subscribers == 0) Thread.sleep(30);
+        }
+        assertThat(subscribers).isPositive();
+        assertThat(received.get(3, TimeUnit.SECONDS).getMessage()).isEqualTo("payload");
     }
 }
