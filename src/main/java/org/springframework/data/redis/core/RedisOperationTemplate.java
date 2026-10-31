@@ -5432,7 +5432,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	public Long luaIncr(String key, long delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(INCR_SCRIPT, Lists.newArrayList(key), delta);
+			return this.executeLuaScript(INCR_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5451,7 +5451,9 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	public Double luaIncr(String key, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(INCR_BYFLOAT_SCRIPT, Lists.newArrayList(key), delta);
+			return Double.valueOf(this.executeLuaScript(
+					RedisScript.of(RedisLua.INCR_BYFLOAT_SCRIPT, String.class),
+					Lists.newArrayList(key), String.valueOf(delta)));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5472,7 +5474,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	public Long luaDecr(String key, long delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(DECR_SCRIPT, Lists.newArrayList(key), delta);
+			return this.executeLuaScript(DECR_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5492,7 +5494,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	public Long luaDiv(String key, long delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(DIV_SCRIPT, Lists.newArrayList(key), delta);
+			return this.executeLuaScript(DIV_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5513,7 +5515,9 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	public Double luaDecr(String key, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(DECR_BYFLOAT_SCRIPT, Lists.newArrayList(key), delta);
+			return Double.valueOf(this.executeLuaScript(
+					RedisScript.of(RedisLua.DECR_BYFLOAT_SCRIPT, String.class),
+					Lists.newArrayList(key), String.valueOf(delta)));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5535,7 +5539,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 			return redisTemplate.execute(HINCR_SCRIPT, this.hashValueSerializer(), this.hashValueSerializer(),
-					Lists.newArrayList(key, hashKey), delta);
+					Lists.newArrayList(key, hashKey), String.valueOf(delta));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5555,8 +5559,9 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	public Double luaHincr(String key, String hashKey, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return redisTemplate.execute(HINCR_BYFLOAT_SCRIPT, this.hashValueSerializer(),
-					this.hashValueSerializer(), Lists.newArrayList(key, hashKey), delta);
+			return Double.valueOf(this.executeLuaScript(
+					RedisScript.of(RedisLua.HINCR_BYFLOAT_SCRIPT, String.class),
+					Lists.newArrayList(key, hashKey), String.valueOf(delta)));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5579,7 +5584,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 			return redisTemplate.execute(HDECR_SCRIPT, this.hashValueSerializer(), this.hashValueSerializer(),
-					Lists.newArrayList(key, hashKey), delta);
+					Lists.newArrayList(key, hashKey), String.valueOf(delta));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5601,8 +5606,9 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	public Double luaHdecr(String key, String hashKey, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return redisTemplate.execute(HDECR_BYFLOAT_SCRIPT, this.hashValueSerializer(),
-					this.hashValueSerializer(), Lists.newArrayList(key, hashKey), delta);
+			return Double.valueOf(this.executeLuaScript(
+					RedisScript.of(RedisLua.HDECR_BYFLOAT_SCRIPT, String.class),
+					Lists.newArrayList(key, hashKey), String.valueOf(delta)));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
@@ -5624,7 +5630,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 			return redisTemplate.execute(HDIV_SCRIPT, this.hashValueSerializer(),
-					this.hashValueSerializer(), Lists.newArrayList(key, hashKey), delta);
+					this.hashValueSerializer(), Lists.newArrayList(key, hashKey), String.valueOf(delta));
 		} catch (Exception e) {
 			log.error(e.getMessage());
 			throw new RedisOperationException(e.getMessage());
