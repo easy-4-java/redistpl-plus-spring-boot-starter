@@ -13,6 +13,7 @@ import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapperBuilderCustomizer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DynamicTest;
@@ -25,6 +26,9 @@ import org.springframework.data.redis.connection.DataType;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
+import org.springframework.context.support.GenericApplicationContext;
+import redistpl.plus.spring.boot.RedisReactiveCachingConfiguration;
 import reactor.core.publisher.Mono;
 
 /** Exercises public operations against a Redis process owned by this test class. */
@@ -1269,5 +1273,26 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
                 .containsExactly("a", "seed", "b");
         assertTimed(reactiveKey);
+    }
+
+    @Test
+    void configuredReactiveTemplateSerializesRealValuesAndHashFields() {
+        RedisReactiveCachingConfiguration configuration = new RedisReactiveCachingConfiguration();
+        Jackson2JsonRedisSerializer<Object> json = new Jackson2JsonRedisSerializer<>(
+                new ObjectMapper(), Object.class);
+        ReactiveRedisTemplate<String, Object> configured = configuration.reactiveRedisTemplate(connection, json);
+        String valueKey = key("configured-reactive-value");
+        assertThat(configured.opsForValue().set(valueKey, "ready").block()).isTrue();
+        assertThat(configured.opsForValue().get(valueKey).block()).isEqualTo("ready");
+        String hashKey = key("configured-reactive-hash");
+        assertThat(configured.opsForHash().put(hashKey, "status", "ready").block()).isTrue();
+        assertThat(configured.opsForHash().get(hashKey, "status").block()).isEqualTo("ready");
+        try (GenericApplicationContext context = new GenericApplicationContext()) {
+            context.refresh();
+            ReactiveRedisOperationTemplate wrapped = configuration.reactiveRedisOperationTemplate(
+                    configured, context.getBeanProvider(JsonMapperBuilderCustomizer.class));
+            assertThat(wrapped.getString(valueKey).block()).isEqualTo("ready");
+            assertThat(wrapped.hGetString(hashKey, "status").block()).isEqualTo("ready");
+        }
     }
 }
