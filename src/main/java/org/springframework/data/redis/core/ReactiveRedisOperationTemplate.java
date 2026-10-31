@@ -16,6 +16,8 @@ import org.springframework.data.redis.core.ZSetOperations.TypedTuple;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.listener.Topic;
 import org.springframework.data.redis.serializer.RedisSerializationContext.SerializationPair;
+import org.springframework.data.redis.serializer.RedisElementWriter;
+import org.springframework.data.redis.serializer.RedisElementReader;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -25,6 +27,7 @@ import reactor.core.publisher.Signal;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -1047,7 +1050,9 @@ public class ReactiveRedisOperationTemplate {
 		try {
 			return Flux.fromIterable(values).flatMap(value -> {
 				return getListOperations().leftPushIfPresent(key, value);
-			}).count().transform(operation -> expireAfter(operation, key, seconds));
+			}).collectList().flatMap(results -> results.isEmpty()
+					? Mono.empty() : Mono.just(results.get(0)))
+					.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1057,7 +1062,9 @@ public class ReactiveRedisOperationTemplate {
 		try {
 			return Flux.fromIterable(values).flatMap(value -> {
 				return getListOperations().leftPushIfPresent(key, value);
-			}).count().transform(operation -> expireAfter(operation, key, timeout));
+			}).collectList().flatMap(results -> results.isEmpty()
+					? Mono.empty() : Mono.just(results.get(0)))
+					.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1271,7 +1278,8 @@ public class ReactiveRedisOperationTemplate {
 			}
 			return Flux.fromIterable(values).concatMap(value -> {
 				return getListOperations().rightPushIfPresent(key, value);
-			}).count().transform(operation -> expireAfter(operation, key, seconds));
+			}).collectList().flatMap(results -> results.isEmpty() ? Mono.empty() : Mono.just(results.get(0)))
+					.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1284,7 +1292,8 @@ public class ReactiveRedisOperationTemplate {
 			}
 			return Flux.fromIterable(values).concatMap(value -> {
 				return getListOperations().rightPushIfPresent(key, value);
-			}).count().transform(operation -> expireAfter(operation, key, timeout));
+			}).collectList().flatMap(results -> results.isEmpty() ? Mono.empty() : Mono.just(results.get(0)))
+					.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3688,7 +3697,9 @@ public class ReactiveRedisOperationTemplate {
        try {
 			return reactiveRedisTemplate.createMono((ReactiveRedisCallback<Boolean>) redisConnection -> {
 				// 1、执行lua脚本
-				Long result =  this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, String.valueOf(expire)).block();
+				Long result = executeNumericLua(LOCK_LUA_SCRIPT,
+						reactiveRedisTemplate.getSerializationContext().getValueSerializationPair(),
+						Collections.singletonList(lockKey), requestId, expire).block();
 				if(LOCK_SUCCESS.equals(result)) {
 				    log.info("locked... redisK = {}", lockKey);
 				    return Mono.just(true);
@@ -3698,7 +3709,9 @@ public class ReactiveRedisOperationTemplate {
 			        while(count < retryTimes) {
 			            try {
 			                Thread.sleep(retryInterval);
-				                result = this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, String.valueOf(expire)).block();
+				                result = executeNumericLua(LOCK_LUA_SCRIPT,
+							reactiveRedisTemplate.getSerializationContext().getValueSerializationPair(),
+							Collections.singletonList(lockKey), requestId, expire).block();
 			                if(LOCK_SUCCESS.equals(result)) {
 			                	log.info("locked... redisK = {}", lockKey);
 			                	return Mono.just(true);
@@ -3749,6 +3762,29 @@ public class ReactiveRedisOperationTemplate {
 
 	// ===============================RedisScript=================================
 
+	private RedisElementWriter<Object> luaArguments(SerializationPair<?> pair) {
+		RedisElementWriter<Object> delegate = (RedisElementWriter<Object>) pair.getWriter();
+		return value -> value instanceof Number
+				? ByteBuffer.wrap(value.toString().getBytes(StandardCharsets.UTF_8))
+				: delegate.write(value);
+	}
+
+	private <T> Mono<T> executeNumericLua(RedisScript<T> script, SerializationPair<?> argsPair,
+			List<String> keys, Object... values) {
+		RedisElementReader<T> resultReader = bytes -> (T) StandardCharsets.UTF_8.decode(bytes).toString();
+		return reactiveRedisTemplate.execute(script, keys, Arrays.asList(values),
+				luaArguments(argsPair), resultReader).last();
+	}
+
+	private Mono<Double> executeDecimalLua(RedisScript<Object> script, SerializationPair<?> argsPair,
+			List<String> keys, Object... values) {
+		String wrapped = "local function calculate()\n" + script.getScriptAsString()
+				+ "\nend\nreturn {calculate()}";
+		RedisScript<List> listScript = RedisScript.of(wrapped, List.class);
+		return executeNumericLua(listScript, argsPair, keys, values)
+				.map(results -> TO_DOUBLE.apply(results.get(0)));
+	}
+
 	/*
      * 库存增加
      * @param key   库存key
@@ -3761,7 +3797,9 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Long> luaIncr(String key, long delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(INCR_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
+			return executeNumericLua(INCR_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getValueSerializationPair(),
+					Lists.newArrayList(key), delta);
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3779,8 +3817,9 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Double> luaIncr(String key, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			Mono<Object> rst = this.executeLuaScript(INCR_BYFLOAT_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
-			return rst.map(TO_DOUBLE);
+			return executeDecimalLua(INCR_BYFLOAT_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getValueSerializationPair(),
+					Lists.newArrayList(key), delta);
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3800,7 +3839,9 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Long> luaDecr(String key, long delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(DECR_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
+			return executeNumericLua(DECR_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getValueSerializationPair(),
+					Lists.newArrayList(key), delta);
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3820,8 +3861,9 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Double> luaDecr(String key, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			Mono<Object> rst = this.executeLuaScript(DECR_BYFLOAT_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
-			return rst.map(TO_DOUBLE);
+			return executeDecimalLua(DECR_BYFLOAT_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getValueSerializationPair(),
+					Lists.newArrayList(key), delta);
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3841,7 +3883,9 @@ public class ReactiveRedisOperationTemplate {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 
-			return this.executeLuaScript(HINCR_SCRIPT, Lists.newArrayList(key, hashKey), String.valueOf(delta));
+			return executeNumericLua(HINCR_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair(),
+					Lists.newArrayList(key, hashKey), delta);
 
 		} catch (Exception e) {
 			return monoError(e);
@@ -3862,14 +3906,9 @@ public class ReactiveRedisOperationTemplate {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 
-			SerializationPair<Object> serializationPair = reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair();
-
-			Flux<Object> rst = reactiveRedisTemplate.execute(HINCR_BYFLOAT_SCRIPT, Lists.newArrayList(key, hashKey),
-					Arrays.asList(String.valueOf(delta)), serializationPair.getWriter(),
-					serializationPair.getReader());
-			;
-
-			return rst.last().map(TO_DOUBLE);
+			return executeDecimalLua(HINCR_BYFLOAT_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair(),
+					Lists.newArrayList(key, hashKey), delta);
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3891,7 +3930,9 @@ public class ReactiveRedisOperationTemplate {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 
-			return this.executeLuaScript(HDECR_SCRIPT, Lists.newArrayList(key, hashKey), String.valueOf(delta));
+			return executeNumericLua(HDECR_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair(),
+					Lists.newArrayList(key, hashKey), delta);
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3913,14 +3954,9 @@ public class ReactiveRedisOperationTemplate {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 
-			SerializationPair<Object> serializationPair = reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair();
-
-			Flux<Object> rst = reactiveRedisTemplate.execute(HDECR_BYFLOAT_SCRIPT, Lists.newArrayList(key, hashKey),
-					Arrays.asList(String.valueOf(delta)), serializationPair.getWriter(),
-					serializationPair.getReader());
-			;
-
-			return rst.last().map(TO_DOUBLE);
+			return executeDecimalLua(HDECR_BYFLOAT_SCRIPT,
+					reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair(),
+					Lists.newArrayList(key, hashKey), delta);
 		} catch (Exception e) {
 			return monoError(e);
 		}
