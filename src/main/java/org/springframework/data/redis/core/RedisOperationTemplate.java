@@ -1752,6 +1752,9 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	 */
 	public List<Object> lLeftPop(String key, Integer count) {
 		try {
+			if (count <= 0) {
+				return Collections.emptyList();
+			}
 			List<Object> result = redisTemplate.executePipelined((RedisConnection redisConnection) -> {
 				byte[] rawKey = rawKey(key);
 				redisConnection.lRange(rawKey, 0, count - 1);
@@ -2047,10 +2050,13 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	 */
 	public List<Object> lRightPop(String key, Integer count) {
 		try {
+			if (count <= 0) {
+				return Collections.emptyList();
+			}
 			List<Object> result = redisTemplate.executePipelined((RedisConnection redisConnection) -> {
 				byte[] rawKey = rawKey(key);
-				redisConnection.lRange(rawKey, -(count - 1), -1);
-				redisConnection.lTrim(rawKey, 0, -(count - 1));
+				redisConnection.lRange(rawKey, -count, -1);
+				redisConnection.lTrim(rawKey, 0, -count - 1);
 				return null;
 			}, this.valueSerializer());
 			return (List<Object>) result.get(0);
