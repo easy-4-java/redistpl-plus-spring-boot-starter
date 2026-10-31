@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -553,5 +554,62 @@ class RedisLiveIntegrationTest {
         assertThatThrownBy(() -> reactive.hSet(key, "field", "value").block())
                 .satisfies(error -> assertThat(error.getCause()).hasMessageContaining("WRONGTYPE"));
         assertThat(reactive.getString(key).block()).isEqualTo("plain");
+    }
+
+    @Test
+    void synchronousHashBatchReadScanAndDelete() {
+        String hash = key("hash-batch");
+        assertThat(sync.hmSet(hash, Map.of("a", "11", "b", "22"))).isTrue();
+        assertThat(sync.hmGet(hash)).containsEntry("a", "11").containsEntry("b", "22");
+        assertThat(sync.hmGet(hash, List.of("b", "a"))).containsExactly("22", "11");
+        assertThat(sync.hmMultiGet(hash, List.of("a", "b")))
+                .containsEntry("a", "11").containsEntry("b", "22");
+        assertThat(sync.hKeys(hash)).containsExactlyInAnyOrder("a", "b");
+        assertThat(sync.hValues(hash)).containsExactlyInAnyOrder("11", "22");
+        List<Map.Entry<Object, Object>> visited = new ArrayList<>();
+        sync.hScan(hash, visited::add);
+        assertThat(visited).extracting(Map.Entry::getKey).containsExactlyInAnyOrder("a", "b");
+        sync.hDel(hash, "a");
+        assertThat(sync.hHasKey(hash, "a")).isFalse();
+        assertThat(sync.hGet(hash, "b")).isEqualTo("22");
+    }
+
+    @Test
+    void reactiveHashBatchReadAndDelete() {
+        String hash = key("hash-batch-reactive");
+        assertThat(reactive.hmSet(hash, Map.<Object, Object>of("a", "11", "b", "22")).block()).isTrue();
+        assertThat(reactive.hmMultiGet(hash, List.<Object>of("a", "b")).block())
+                .containsEntry("a", "11").containsEntry("b", "22");
+        assertThat(reactive.hMultiGet(hash, List.<Object>of("b", "a")).block())
+                .containsExactly("22", "11");
+        assertThat(reactive.hKeys(hash).collectList().block()).containsExactlyInAnyOrder("a", "b");
+        assertThat(reactive.hDel(hash, "a").block()).isEqualTo(1L);
+        assertThat(reactive.hHasKey(hash, "a").block()).isFalse();
+        assertThat(reactive.hGet(hash, "b").block()).isEqualTo("22");
+    }
+
+    @Test
+    void synchronousListMutationKeepsExpectedPositions() {
+        String list = key("list-mutate");
+        assertThat(sync.lRightPushAll(list, List.of("a", "b", "c"))).isEqualTo(3L);
+        assertThat(sync.lSet(list, 1, "middle")).isTrue();
+        assertThat(sync.lRangeString(list, 0, -1)).containsExactly("a", "middle", "c");
+        assertThat(sync.lRem(list, 1, "middle")).isEqualTo(1L);
+        assertThat(sync.lRangeString(list, 0, -1)).containsExactly("a", "c");
+        assertThat(sync.lTrim(list, 0, 0)).isTrue();
+        assertThat(sync.lRangeString(list, 0, -1)).containsExactly("a");
+    }
+
+    @Test
+    void reactiveListMutationKeepsExpectedPositions() {
+        String list = key("list-mutate-reactive");
+        assertThat(reactive.lRightPushAll(list, List.of("a", "b", "c")).block()).isEqualTo(3L);
+        assertThat(reactive.lSet(list, 1, "middle").block()).isTrue();
+        assertThat(reactive.lRangeString(list, 0, -1).collectList().block())
+                .containsExactly("a", "middle", "c");
+        assertThat(reactive.lRem(list, 1, "middle").block()).isEqualTo(1L);
+        assertThat(reactive.lRangeString(list, 0, -1).collectList().block()).containsExactly("a", "c");
+        assertThat(reactive.lTrim(list, 0, 0).block()).isTrue();
+        assertThat(reactive.lRangeString(list, 0, -1).collectList().block()).containsExactly("a");
     }
 }
