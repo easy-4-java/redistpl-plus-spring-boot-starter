@@ -1707,6 +1707,41 @@ class RedisLiveIntegrationTest {
         }));
     }
 
+    @TestFactory
+    Stream<DynamicTest> synchronousLuaArithmeticRejectsNonnumericStoredValues() {
+        List<WrongTypeOperation> valueCommands = List.of(
+                new WrongTypeOperation("increment long", k -> sync.luaIncr(k, 1L)),
+                new WrongTypeOperation("increment double", k -> sync.luaIncr(k, 1.0)),
+                new WrongTypeOperation("decrement long", k -> sync.luaDecr(k, 1L)),
+                new WrongTypeOperation("decrement double", k -> sync.luaDecr(k, 1.0)),
+                new WrongTypeOperation("divide long", k -> sync.luaDiv(k, 2L))
+        );
+        List<WrongTypeOperation> hashCommands = List.of(
+                new WrongTypeOperation("hash increment long", k -> sync.luaHincr(k, "field", 1L)),
+                new WrongTypeOperation("hash increment double", k -> sync.luaHincr(k, "field", 1.0)),
+                new WrongTypeOperation("hash decrement long", k -> sync.luaHdecr(k, "field", 1L)),
+                new WrongTypeOperation("hash decrement double", k -> sync.luaHdecr(k, "field", 1.0)),
+                new WrongTypeOperation("hash divide long", k -> sync.luaHdiv(k, "field", 2L))
+        );
+        Stream<DynamicTest> values = valueCommands.stream().map(operation ->
+                DynamicTest.dynamicTest(operation.name(), () -> {
+                    String source = key("nonnumeric-value");
+                    sync.set(source, "not-a-number");
+                    assertThatThrownBy(() -> operation.invoke().accept(source))
+                            .isInstanceOf(RedisOperationException.class);
+                    assertThat(sync.getString(source)).isEqualTo("not-a-number");
+                }));
+        Stream<DynamicTest> hashes = hashCommands.stream().map(operation ->
+                DynamicTest.dynamicTest(operation.name(), () -> {
+                    String source = key("nonnumeric-hash");
+                    sync.hSet(source, "field", "not-a-number");
+                    assertThatThrownBy(() -> operation.invoke().accept(source))
+                            .isInstanceOf(RedisOperationException.class);
+                    assertThat(sync.hGetString(source, "field")).isEqualTo("not-a-number");
+                }));
+        return Stream.concat(values, hashes);
+    }
+
     private record JsonOperations(RedisOperationTemplate sync, ReactiveRedisOperationTemplate reactive) {}
 
     @SuppressWarnings("unchecked")
