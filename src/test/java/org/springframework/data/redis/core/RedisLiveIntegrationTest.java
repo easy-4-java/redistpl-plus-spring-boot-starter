@@ -2453,6 +2453,7 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.set(key, "value", (Duration) null).block()).isFalse();
         assertThat(reactive.set(key, "value", Duration.ofSeconds(-1)).block()).isFalse();
         assertThat(reactive.hasKey(key).block()).isFalse();
+        assertThat(reactive.getKey(null).collectList().block()).isEmpty();
         assertThat(reactive.mGet((String) null).block()).isNull();
         assertThat(reactive.mGet(List.<String>of()).block()).isNull();
         assertThat(reactive.mGet(List.<Object>of(), "prefix").block()).isNull();
@@ -2532,5 +2533,106 @@ class RedisLiveIntegrationTest {
         }
         assertThat(subscribers).isPositive();
         assertThat(received.get(3, TimeUnit.SECONDS).getMessage()).isEqualTo("payload");
+    }
+
+    @Test
+    void reactiveLegacyLockCommandsReleaseOnlyTheirTestKeys() {
+        String simple = key("reactive-simple-lock");
+        assertThat(reactive.tryLock(simple, 1_000L).block()).isTrue();
+        assertThat(reactive.tryLock(simple, Duration.ofSeconds(1)).block()).isFalse();
+        assertThat(reactive.unlock(simple).block()).isTrue();
+        assertThat(reactive.hasKey(simple).block()).isFalse();
+
+        String blocking = key("reactive-blocking-lock");
+        assertThat(reactive.tryBlockLock(blocking, 1).block()).isTrue();
+        assertThat(reactive.tryBlockLock(blocking, 1).block()).isFalse();
+        assertThat(reactive.unBlockLock(blocking, "request-1").block()).isTrue();
+        assertThat(reactive.hasKey(blocking).block()).isFalse();
+        assertThat(reactive.lRangeString(blocking + ":list", 0, -1).collectList().block())
+                .containsExactly("request-1");
+    }
+
+    @TestFactory
+    Stream<DynamicTest> reactiveCommandsRejectNullCollectionsWithoutChangingRedis() {
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("left push all", k -> reactive.lLeftPushAll(k, null)),
+                new InvalidKeyCommand("left push all seconds", k -> reactive.lLeftPushAll(k, null, 30L)),
+                new InvalidKeyCommand("left push all duration", k -> reactive.lLeftPushAll(k, null, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("left push if present all seconds", k -> reactive.lLeftPushxAll(k, null, 30L)),
+                new InvalidKeyCommand("left push if present all duration", k -> reactive.lLeftPushxAll(k, null, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("right push all", k -> reactive.lRightPushAll(k, null)),
+                new InvalidKeyCommand("right push all seconds", k -> reactive.lRightPushAll(k, null, 30L)),
+                new InvalidKeyCommand("right push all duration", k -> reactive.lRightPushAll(k, null, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("hash delete fields", k -> reactive.hDel(k, (Object[]) null)),
+                new InvalidKeyCommand("hash get fields", k -> reactive.hMultiGet(k, null)),
+                new InvalidKeyCommand("hash map get fields", k -> reactive.hmMultiGet(k, null)),
+                new InvalidKeyCommand("hash map set", k -> reactive.hmSet(k, null)),
+                new InvalidKeyCommand("sorted add tuples", k -> reactive.zAdd(k, (Set<ZSetOperations.TypedTuple<Object>>) null)),
+                new InvalidKeyCommand("sorted range", k -> reactive.zRange(k, null)),
+                new InvalidKeyCommand("sorted range by score", k -> reactive.zRangeByScore(k, null)),
+                new InvalidKeyCommand("sorted range by lex", k -> reactive.zRangeByLex(k, null)),
+                new InvalidKeyCommand("sorted reverse range", k -> reactive.zRevrange(k, null)),
+                new InvalidKeyCommand("sorted reverse score range", k -> reactive.zRevrangeByScore(k, null))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () -> {
+            String key = key("null-collection");
+            assertThatThrownBy(() -> Mono.from(command.command().apply(key)).block())
+                    .isInstanceOf(RuntimeException.class);
+            assertThat(reactive.hasKey(key).block()).isFalse();
+        }));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void reactiveCommandFamiliesNormalizeImmediateClientSetupFailures() {
+        ReactiveRedisTemplate<String, Object> unavailable = mock(ReactiveRedisTemplate.class,
+                invocation -> { throw new IllegalStateException("backend unavailable"); });
+        ReactiveRedisOperationTemplate failed = new ReactiveRedisOperationTemplate(unavailable, new ObjectMapper());
+        String key = key("unavailable-client");
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("key lookup", k -> failed.getKey(k + "*")),
+                new InvalidKeyCommand("vague key lookup", failed::getVagueKey),
+                new InvalidKeyCommand("prefix lookup", failed::getValueKeyByPrefix),
+                new InvalidKeyCommand("get", failed::get),
+                new InvalidKeyCommand("pattern multi get", k -> failed.mGet(k + "*")),
+                new InvalidKeyCommand("collection multi get", k -> failed.mGet(List.of(k))),
+                new InvalidKeyCommand("prefixed multi get", k -> failed.mGet(List.<Object>of("one"), k)),
+                new InvalidKeyCommand("blocking left pop", k -> failed.lLeftPop(k, Duration.ofSeconds(1))),
+                new InvalidKeyCommand("blocking right pop", k -> failed.lRightPop(k, Duration.ofSeconds(1))),
+                new InvalidKeyCommand("left push distinct", k -> failed.lLeftPushDistinct(k, "a")),
+                new InvalidKeyCommand("left pop and remove", failed::lLeftPopAndLrem),
+                new InvalidKeyCommand("right push distinct", k -> failed.lRightPushDistinct(k, "a")),
+                new InvalidKeyCommand("right pop and remove", failed::lRightPopAndLrem),
+                new InvalidKeyCommand("right push seconds", k -> failed.lRightPush(k, "a", 30L)),
+                new InvalidKeyCommand("random set member", k -> failed.sRandomSet(k, 1)),
+                new InvalidKeyCommand("distinct random set member", k -> failed.sRandomSetDistinct(k, 1)),
+                new InvalidKeyCommand("set difference collection store", k -> failed.sDiffAndStore(List.of(k, "other"), "target")),
+                new InvalidKeyCommand("set intersection collection", k -> failed.sIntersect(List.of(k, "other"))),
+                new InvalidKeyCommand("set intersection collection store", k -> failed.sIntersectAndStore(List.of(k, "other"), "target")),
+                new InvalidKeyCommand("set union collection", k -> failed.sUnion(List.of(k, "other"))),
+                new InvalidKeyCommand("set union collection store", k -> failed.sUnionAndStore(List.of(k, "other"), "target")),
+                new InvalidKeyCommand("sorted intersection", k -> failed.zIntersectAndStore(k, List.of("other"), "target")),
+                new InvalidKeyCommand("sorted union", k -> failed.zUnionAndStore(k, List.of("other"), "target")),
+                new InvalidKeyCommand("sorted weighted intersection", k -> failed.zIntersectAndStore(
+                        k, List.of("other"), "target", Aggregate.SUM, Weights.of(1, 1))),
+                new InvalidKeyCommand("sorted weighted union", k -> failed.zUnionAndStore(
+                        k, List.of("other"), "target", Aggregate.SUM, Weights.of(1, 1))),
+                new InvalidKeyCommand("publish", k -> failed.sendMessage(k, "payload")),
+                new InvalidKeyCommand("subscribe", k -> failed.listenTo(new ChannelTopic(k))),
+                new InvalidKeyCommand("unblock lock", k -> failed.unBlockLock(k, "owner")),
+                new InvalidKeyCommand("delete set", failed::sDel),
+                new InvalidKeyCommand("delete sorted set", failed::zDel),
+                new InvalidKeyCommand("Lua string", k -> failed.executeLuaScript("return 1", Long.class, List.of(k))),
+                new InvalidKeyCommand("Lua object", k -> failed.executeLuaScript(RedisScript.of("return 1", Long.class), List.of(k))),
+                new InvalidKeyCommand("Lua resource", k -> failed.executeLuaScript(
+                        new ByteArrayResource("return 1".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                        Long.class, List.of(k)))
+        );
+        for (InvalidKeyCommand command : commands) {
+            assertThatThrownBy(() -> Mono.from(command.command().apply(key)).block())
+                    .as(command.name())
+                    .isInstanceOf(RedisOperationException.class)
+                    .hasMessageContaining("backend unavailable");
+        }
     }
 }
