@@ -1050,8 +1050,7 @@ public class ReactiveRedisOperationTemplate {
 		try {
 			return Flux.fromIterable(values).flatMap(value -> {
 				return getListOperations().leftPushIfPresent(key, value);
-			}).collectList().flatMap(results -> results.isEmpty()
-					? Mono.empty() : Mono.just(results.get(0)))
+			}).count()
 					.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
@@ -1062,8 +1061,7 @@ public class ReactiveRedisOperationTemplate {
 		try {
 			return Flux.fromIterable(values).flatMap(value -> {
 				return getListOperations().leftPushIfPresent(key, value);
-			}).collectList().flatMap(results -> results.isEmpty()
-					? Mono.empty() : Mono.just(results.get(0)))
+			}).count()
 					.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
