@@ -1742,6 +1742,44 @@ class RedisLiveIntegrationTest {
         return Stream.concat(values, hashes);
     }
 
+    @TestFactory
+    Stream<DynamicTest> synchronousBulkAndTypedCommandsRejectWrongRedisTypes() {
+        List<WrongTypeOperation> stringSources = List.of(
+                new WrongTypeOperation("hash default get", k -> sync.hGet(k, "field", "default")),
+                new WrongTypeOperation("hash bulk get", k -> sync.hGet(List.of(k), "field")),
+                new WrongTypeOperation("hash multi get", k -> sync.hMultiGet(List.of(k), "field")),
+                new WrongTypeOperation("hash get all bulk", k -> sync.hGetAllFor(List.of(k), Map.class)),
+                new WrongTypeOperation("hash bulk set", k -> sync.hSet(List.of(k), "field", "value")),
+                new WrongTypeOperation("hash multi set", k -> sync.hMultiSet(List.of(k), "field", "value")),
+                new WrongTypeOperation("sorted watch", k -> sync.zIncrAndWatch(k, "a", 1.0, 0, 1)),
+                new WrongTypeOperation("sorted union pair", k ->
+                        sync.zUnionAndStore(k, key("other"), key("destination"))),
+                new WrongTypeOperation("sorted intersection pair", k ->
+                        sync.zIntersectAndStore(k, key("other"), key("destination")))
+        );
+        Stream<DynamicTest> stringFailures = stringSources.stream().map(operation ->
+                DynamicTest.dynamicTest(operation.name(), () -> {
+                    String source = key("wrong-string-source");
+                    sync.set(source, "original");
+                    assertThatThrownBy(() -> operation.invoke().accept(source))
+                            .isInstanceOf(RedisOperationException.class);
+                    assertThat(sync.getString(source)).isEqualTo("original");
+                }));
+        List<WrongTypeOperation> hashSources = List.of(
+                new WrongTypeOperation("string range", k -> sync.getRange(k, 0, 2)),
+                new WrongTypeOperation("string get and set", k -> sync.getAndSet(k, "replacement"))
+        );
+        Stream<DynamicTest> hashFailures = hashSources.stream().map(operation ->
+                DynamicTest.dynamicTest(operation.name(), () -> {
+                    String source = key("wrong-hash-source");
+                    sync.hSet(source, "field", "original");
+                    assertThatThrownBy(() -> operation.invoke().accept(source))
+                            .isInstanceOf(RedisOperationException.class);
+                    assertThat(sync.hGetString(source, "field")).isEqualTo("original");
+                }));
+        return Stream.concat(stringFailures, hashFailures);
+    }
+
     private record JsonOperations(RedisOperationTemplate sync, ReactiveRedisOperationTemplate reactive) {}
 
     @SuppressWarnings("unchecked")
