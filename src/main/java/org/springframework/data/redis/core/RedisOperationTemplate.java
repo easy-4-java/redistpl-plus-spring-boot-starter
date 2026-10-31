@@ -111,7 +111,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 	}
 
 	public <V> byte[][] getRawValues(Collection<V> values) {
-		return rawValues(values);
+		return values.stream().map(this::rawValue).toArray(byte[][]::new);
 	}
 
 	public <HK> byte[] getRawHashKey(HK hashKey) {

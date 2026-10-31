@@ -3199,4 +3199,41 @@ class RedisLiveIntegrationTest {
         assertThat(sync.hGetAllFor(List.of(first, second), new TypeReference<Map<String, String>>() {}))
                 .containsExactly(Map.of("id", "1"), Map.of("id", "2"));
     }
+
+    @Test
+    void synchronousSerializationHelpersRoundTripTheConfiguredStringCodecs() {
+        byte[] one = sync.getRawKey("one"), two = sync.getRawValue("two");
+        assertThat(sync.getRawString("one")).isEqualTo(one);
+        assertThat(java.util.Arrays.deepEquals(sync.getRawValues(List.of("one", "two")), new byte[][] {one, two})).isTrue();
+        assertThat(sync.getRawHashKey("one")).isEqualTo(one);
+        assertThat(java.util.Arrays.deepEquals(sync.getRawHashKeys("one", "two"), new byte[][] {one, two})).isTrue();
+        assertThat(sync.getRawHashValue("two")).isEqualTo(two);
+        assertThat(java.util.Arrays.deepEquals(sync.getRawKeys("one", "two"), new byte[][] {one, two})).isTrue();
+        assertThat(java.util.Arrays.deepEquals(sync.getRawKeys(List.of("one", "two")), new byte[][] {one, two})).isTrue();
+        assertThat(java.util.Arrays.deepEquals(sync.getRawKeys("one", List.of("two")), new byte[][] {one, two})).isTrue();
+
+        assertThat(sync.getDeserializeKey(one)).isEqualTo("one");
+        assertThat(sync.getDeserializeKeys(Set.of(one, two))).containsExactlyInAnyOrder("one", "two");
+        assertThat(sync.getDeserializeValue(one)).isEqualTo("one");
+        assertThat(sync.getDeserializeString(two)).isEqualTo("two");
+        assertThat(sync.<String>getDeserializeHashKey(one)).isEqualTo("one");
+        assertThat(sync.<String>getDeserializeHashValue(two)).isEqualTo("two");
+        assertThat(sync.getDeserializeValues(List.of(one, two))).containsExactly("one", "two");
+        assertThat(sync.getDeserializeValues(Set.of(one, two))).containsExactlyInAnyOrder("one", "two");
+        assertThat(sync.<String>getDeserializeHashKeys(Set.of(one, two)))
+                .containsExactlyInAnyOrder("one", "two");
+        assertThat(sync.<String>getDeserializeHashValues(List.of(one, two))).containsExactly("one", "two");
+        assertThat(sync.<String, String>getDeserializeHashMap(Map.of(one, two)))
+                .containsEntry("one", "two");
+
+        DefaultTuple tuple = new DefaultTuple(one, 2.5);
+        assertThat(sync.getDeserializeTuple(tuple).getValue()).isEqualTo("one");
+        assertThat(sync.getDeserializeTupleValues(List.of(tuple)))
+                .extracting(ZSetOperations.TypedTuple::getValue).containsExactly("one");
+        assertThat(sync.getDeserializeTupleValues(Set.of(tuple)))
+                .extracting(ZSetOperations.TypedTuple::getValue).containsExactly("one");
+        assertThat(sync.getRawTupleValues(Set.of(new DefaultTypedTuple<>("one", 2.5))))
+                .extracting(org.springframework.data.redis.connection.zset.Tuple::getValue)
+                .containsExactly(one);
+    }
 }
