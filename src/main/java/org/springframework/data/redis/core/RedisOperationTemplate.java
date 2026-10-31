@@ -5328,7 +5328,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
        try {
 			return redisTemplate.execute((RedisCallback<Boolean>) redisConnection -> {
 				// 1、执行lua脚本
-				Long result =  this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, expire);
+				Long result =  this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, String.valueOf(expire));
 				if(LOCK_SUCCESS.equals(result)) {
 				    log.info("locked... redisK = {}", lockKey);
 				    return Boolean.TRUE;
@@ -5338,7 +5338,7 @@ public class RedisOperationTemplate extends AbstractOperations<String, Object> {
 			        while(count < retryTimes) {
 			            try {
 			                Thread.sleep(retryInterval);
-			                result = this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, expire);
+				                result = this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, String.valueOf(expire));
 			                if(LOCK_SUCCESS.equals(result)) {
 			                	log.info("locked... redisK = {}", lockKey);
 			                    return Boolean.TRUE;
