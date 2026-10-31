@@ -2259,4 +2259,68 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.zRangeByScoreWithScores(sorted, Range.closed(0.0, 0.0)).collectList().block())
                 .extracting(tuple -> tuple.getValue()).containsExactly("alpha", "bravo", "charlie");
     }
+
+    @TestFactory
+    Stream<DynamicTest> remainingReactiveCommandFamiliesRejectInvalidKeys() {
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("delete", k -> reactive.del(k)),
+                new InvalidKeyCommand("sorted lex range", k -> reactive.zRangeByLex(k, Range.closed("a", "z"))),
+                new InvalidKeyCommand("sorted lex range limit", k -> reactive.zRangeByLex(k, Range.closed("a", "z"), Limit.limit().count(2))),
+                new InvalidKeyCommand("hyperloglog add", k -> reactive.pfAdd(k, "a")),
+                new InvalidKeyCommand("hyperloglog delete", reactive::pfDel),
+                new InvalidKeyCommand("hyperloglog count", k -> reactive.pfCount(k)),
+                new InvalidKeyCommand("hyperloglog merge", k -> reactive.pfMerge(k, "source")),
+                new InvalidKeyCommand("set bit", k -> reactive.setBit(k, 0, true)),
+                new InvalidKeyCommand("get bit", k -> reactive.getBit(k, 0)),
+                new InvalidKeyCommand("move list", k -> reactive.lRightPopAndLeftPush(k, "destination")),
+                new InvalidKeyCommand("move list duration", k -> reactive.lRightPopAndLeftPush(k, "destination", Duration.ofSeconds(1))),
+                new InvalidKeyCommand("hash get fallback", k -> reactive.hGet(k, "field", "fallback")),
+                new InvalidKeyCommand("sorted intersection weighted", k -> reactive.zIntersectAndStore(k, List.of("other"), "target", Aggregate.SUM, Weights.of(1, 1))),
+                new InvalidKeyCommand("sorted union weighted", k -> reactive.zUnionAndStore(k, List.of("other"), "target", Aggregate.SUM, Weights.of(1, 1)))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> Mono.from(command.command().apply(null)).block())
+                        .isInstanceOf(RuntimeException.class)));
+    }
+
+    @Test
+    void reactiveTypedSetAndSortedRangesConvertStoredNumericMembers() {
+        String set = key("reactive-typed-numeric-set");
+        reactive.sAdd(set, "1", "2").block();
+        assertThat(reactive.sGetString(set).collectList().block()).containsExactlyInAnyOrder("1", "2");
+        assertThat(reactive.sGetDouble(set).collectList().block()).containsExactlyInAnyOrder(1.0, 2.0);
+        assertThat(reactive.sGetInteger(set).collectList().block()).containsExactlyInAnyOrder(1, 2);
+        assertThat(reactive.sGetFor(set, String.class).collectList().block()).containsExactlyInAnyOrder("1", "2");
+
+        String sorted = key("reactive-typed-numeric-sorted");
+        reactive.zAdd(sorted, "1", 1.0).block();
+        reactive.zAdd(sorted, "2", 2.0).block();
+        Range<Long> ranks = Range.closed(0L, 1L);
+        Range<Double> scores = Range.closed(1.0, 2.0);
+        assertThat(reactive.zRangeDouble(sorted, ranks).collectList().block()).containsExactly(1.0, 2.0);
+        assertThat(reactive.zRangeFor(sorted, ranks, String.class).collectList().block()).containsExactly("1", "2");
+        assertThat(reactive.zRangeLongByScore(sorted, scores).collectList().block()).containsExactly(1L, 2L);
+        assertThat(reactive.zRangeIntegerByScore(sorted, scores).collectList().block()).containsExactly(1, 2);
+        assertThat(reactive.zRangeByScoreFor(sorted, scores, String.class).collectList().block()).containsExactly("1", "2");
+        assertThat(reactive.zRevrangeString(sorted, ranks).collectList().block()).containsExactly("2", "1");
+        assertThat(reactive.zRevrangeDouble(sorted, ranks).collectList().block()).containsExactly(2.0, 1.0);
+        assertThat(reactive.zRevrangeLong(sorted, ranks).collectList().block()).containsExactly(2L, 1L);
+        assertThat(reactive.zRevrangeInteger(sorted, ranks).collectList().block()).containsExactly(2, 1);
+        assertThat(reactive.zRevrangeFor(sorted, ranks, String.class).collectList().block()).containsExactly("2", "1");
+        assertThat(reactive.zRevrangeDoubleByScore(sorted, scores).collectList().block()).containsExactly(2.0, 1.0);
+        assertThat(reactive.zRevrangeLongByScore(sorted, scores).collectList().block()).containsExactly(2L, 1L);
+        assertThat(reactive.zRevrangeIntegerByScore(sorted, scores).collectList().block()).containsExactly(2, 1);
+        assertThat(reactive.zRevrangeForByScore(sorted, scores, String.class).collectList().block())
+                .containsExactly("2", "1");
+    }
+
+    @Test
+    void reactiveKeyPrefixDiscoveryReturnsOnlyMatchingStoredKeys() {
+        String prefix = key("reactive-prefix");
+        String first = prefix + ":first", second = prefix + ":second";
+        reactive.set(first, "a").block();
+        reactive.set(second, "b").block();
+        assertThat(reactive.getValueKeyByPrefix(prefix).collectList().block())
+                .containsExactlyInAnyOrder(first, second);
+    }
 }
