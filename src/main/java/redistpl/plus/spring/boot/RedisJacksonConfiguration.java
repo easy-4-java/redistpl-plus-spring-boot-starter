@@ -243,8 +243,11 @@ public class RedisJacksonConfiguration {
 			private void configurePropertyNamingStrategyField(JsonMapper.Builder builder, String fieldName) {
 				// Find the field (this way we automatically support new constants
 				// that may be added by Jackson in the future)
-				Field field = ReflectionUtils.findField(PropertyNamingStrategy.class, fieldName,
+				Field legacyField = ReflectionUtils.findField(PropertyNamingStrategy.class, fieldName,
 						PropertyNamingStrategy.class);
+				Field field = legacyField != null ? legacyField
+						: ReflectionUtils.findField(PropertyNamingStrategies.class, fieldName,
+								PropertyNamingStrategy.class);
 				Assert.notNull(field, () -> "Constant named '" + fieldName + "' not found on "
 						+ PropertyNamingStrategy.class.getName());
 				try {
@@ -276,3 +279,4 @@ public class RedisJacksonConfiguration {
 
 	}
 }
+

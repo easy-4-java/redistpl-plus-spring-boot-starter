@@ -1,0 +1,1581 @@
+package org.springframework.data.redis.core;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import java.time.Duration;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.ArrayList;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.json.JsonMapperBuilderCustomizer;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
+import org.springframework.data.domain.Range;
+import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.connection.DataType;
+import org.springframework.data.redis.connection.zset.Aggregate;
+import org.springframework.data.redis.connection.zset.Weights;
+import org.springframework.data.redis.serializer.RedisSerializationContext;
+import org.springframework.data.redis.serializer.RedisSerializer;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
+import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import redistpl.plus.spring.boot.RedisCachingConfiguration;
+import redistpl.plus.spring.boot.RedisReactiveCachingConfiguration;
+import reactor.core.publisher.Mono;
+
+/** Exercises public operations against a Redis process owned by this test class. */
+class RedisLiveIntegrationTest {
+    private static LocalRedisFixture redis;
+    private static LettuceConnectionFactory connection;
+    private static RedisOperationTemplate sync;
+    private static ReactiveRedisOperationTemplate reactive;
+
+    @BeforeAll
+    static void start() throws Exception {
+        redis = new LocalRedisFixture();
+        try {
+            connection = new LettuceConnectionFactory("127.0.0.1", redis.port);
+            connection.afterPropertiesSet();
+            StringRedisSerializer strings = new StringRedisSerializer();
+            RedisTemplate<String, Object> template = new RedisTemplate<>();
+            template.setConnectionFactory(connection);
+            template.setKeySerializer(strings);
+            template.setValueSerializer(strings);
+            template.setHashKeySerializer(strings);
+            template.setHashValueSerializer(strings);
+            template.afterPropertiesSet();
+            sync = new RedisOperationTemplate(template, new ObjectMapper());
+
+            @SuppressWarnings("unchecked")
+            RedisSerializer<Object> values = (RedisSerializer<Object>) (RedisSerializer<?>) strings;
+            RedisSerializationContext<String, Object> context = RedisSerializationContext
+                    .<String, Object>newSerializationContext(strings)
+                    .value(values).hashKey(values).hashValue(values).build();
+            reactive = new ReactiveRedisOperationTemplate(
+                    new ReactiveRedisTemplate<>(connection, context), new ObjectMapper());
+        } catch (Exception failure) {
+            stop();
+            throw failure;
+        }
+    }
+
+    @AfterAll
+    static void stop() throws Exception {
+        try {
+            if (connection != null) connection.destroy();
+        } finally {
+            if (redis != null) redis.close();
+        }
+    }
+
+    private String key(String suffix) {
+        return "redistpl:integration:" + UUID.randomUUID() + ":" + suffix;
+    }
+
+    @Test
+    void synchronousKeyValueAndExpiry() {
+        String key = key("value");
+        assertThat(sync.hasKey(key)).isFalse();
+        assertThat(sync.set(key, "first")).isTrue();
+        assertThat(sync.getString(key)).isEqualTo("first");
+        assertThat(sync.setNx(key, "second")).isFalse();
+        assertThat(sync.getString(key)).isEqualTo("first");
+        assertThat(sync.expire(key, Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.getExpire(key)).isBetween(1L, 30L);
+        assertThat(sync.persist(key)).isTrue();
+        assertThat(sync.getExpire(key)).isEqualTo(-1L);
+        String renamed = key("renamed");
+        sync.rename(key, renamed);
+        assertThat(sync.hasKey(key)).isFalse();
+        assertThat(sync.getString(renamed)).isEqualTo("first");
+        assertThat(sync.del(renamed)).isEqualTo(1L);
+        assertThat(sync.hasKey(renamed)).isFalse();
+    }
+
+    @Test
+    void reactivePublishersChangeStateOnlyWhenSubscribed() {
+        String key = key("reactive");
+        var pending = reactive.set(key, "first");
+        assertThat(reactive.hasKey(key).block()).isFalse();
+        assertThat(pending.block()).isTrue();
+        assertThat(reactive.getString(key).block()).isEqualTo("first");
+        assertThat(reactive.setNX(key, "second").block()).isFalse();
+        assertThat(reactive.expire(key, Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.getExpire(key).block()).isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+        assertThat(reactive.del(key).block()).isEqualTo(1L);
+        assertThat(reactive.hasKey(key).block()).isFalse();
+    }
+
+    @Test
+    void synchronousListOrderingAndRemoval() {
+        String key = key("list");
+        assertThat(sync.lRightPush(key, "one")).isEqualTo(1L);
+        assertThat(sync.lRightPush(key, "two")).isEqualTo(2L);
+        assertThat(sync.lLeftPush(key, "zero")).isEqualTo(3L);
+        assertThat(sync.lRangeString(key, 0, -1)).containsExactly("zero", "one", "two");
+        assertThat(sync.lIndexString(key, 1)).isEqualTo("one");
+        assertThat(sync.lLeftPop(key)).isEqualTo("zero");
+        assertThat(sync.lRightPop(key)).isEqualTo("two");
+        assertThat(sync.lSize(key)).isEqualTo(1L);
+    }
+
+    @Test
+    void reactiveListOrderingAndRemoval() {
+        String key = key("list-reactive");
+        assertThat(reactive.lRightPush(key, "one").block()).isEqualTo(1L);
+        assertThat(reactive.lRightPush(key, "two").block()).isEqualTo(2L);
+        assertThat(reactive.lLeftPush(key, "zero").block()).isEqualTo(3L);
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block())
+                .containsExactly("zero", "one", "two");
+        assertThat(reactive.lLeftPop(key).block()).isEqualTo("zero");
+        assertThat(reactive.lRightPop(key).block()).isEqualTo("two");
+        assertThat(reactive.lSize(key).block()).isEqualTo(1L);
+    }
+
+    @Test
+    void synchronousHashAndSetChangesAreVisible() {
+        String hash = key("hash");
+        assertThat(sync.hSet(hash, "status", "new")).isTrue();
+        assertThat(sync.hGet(hash, "status")).isEqualTo("new");
+        assertThat(sync.hHasKey(hash, "status")).isTrue();
+        assertThat(sync.hSet(hash, "status", "ready")).isTrue();
+        assertThat(sync.hGet(hash, "status")).isEqualTo("ready");
+        assertThat(sync.hSize(hash)).isEqualTo(1L);
+        String set = key("set");
+        assertThat(sync.sAdd(set, "a", "b")).isEqualTo(2L);
+        assertThat(sync.sAdd(set, "a")).isZero();
+        assertThat(sync.sGet(set)).containsExactlyInAnyOrder("a", "b");
+        assertThat(sync.sHasKey(set, "b")).isTrue();
+        assertThat(sync.sRemove(set, "b")).isEqualTo(1L);
+        assertThat(sync.sGet(set)).containsExactly("a");
+    }
+
+    @Test
+    void reactiveHashAndSetChangesAreVisible() {
+        String hash = key("hash-reactive");
+        assertThat(reactive.hSet(hash, "status", "new").block()).isTrue();
+        assertThat(reactive.hGet(hash, "status").block()).isEqualTo("new");
+        assertThat(reactive.hHasKey(hash, "status").block()).isTrue();
+        assertThat(reactive.hSet(hash, "status", "ready").block()).isFalse();
+        assertThat(reactive.hGet(hash, "status").block()).isEqualTo("ready");
+        assertThat(reactive.hSize(hash).block()).isEqualTo(1L);
+        String set = key("set-reactive");
+        assertThat(reactive.sAdd(set, "a", "b").block()).isEqualTo(2L);
+        assertThat(reactive.sAdd(set, "a").block()).isZero();
+        assertThat(reactive.sGet(set).collectList().block()).containsExactlyInAnyOrder("a", "b");
+        assertThat(reactive.sHasKey(set, "b").block()).isTrue();
+        assertThat(reactive.sRemove(set, "b").block()).isEqualTo(1L);
+        assertThat(reactive.sGet(set).collectList().block()).containsExactly("a");
+    }
+
+    @Test
+    void synchronousCountersAndSortedSets() {
+        String counter = key("counter");
+        assertThat(sync.incr(counter, 5L)).isEqualTo(5L);
+        assertThat(sync.decr(counter, 2L)).isEqualTo(3L);
+        assertThat(sync.getLong(counter)).isEqualTo(3L);
+        String ranked = key("ranked");
+        assertThat(sync.zAdd(ranked, "low", 1.0)).isTrue();
+        assertThat(sync.zAdd(ranked, "high", 3.0)).isTrue();
+        assertThat(sync.zCard(ranked)).isEqualTo(2L);
+        assertThat(sync.zRange(ranked, 0, -1)).containsExactly("low", "high");
+        assertThat(sync.zIncr(ranked, "low", 4.0)).isEqualTo(5.0);
+        assertThat(sync.zScore(ranked, "low")).isEqualTo(5.0);
+        assertThat(sync.zRange(ranked, 0, -1)).containsExactly("high", "low");
+    }
+
+    @Test
+    void reactiveCountersAndSortedSets() {
+        String counter = key("counter-reactive");
+        assertThat(reactive.incr(counter, 5L).block()).isEqualTo(5L);
+        assertThat(reactive.decr(counter, 2L).block()).isEqualTo(3L);
+        assertThat(reactive.getLong(counter).block()).isEqualTo(3L);
+        String ranked = key("ranked-reactive");
+        assertThat(reactive.zAdd(ranked, "low", 1.0).block()).isTrue();
+        assertThat(reactive.zAdd(ranked, "high", 3.0).block()).isTrue();
+        assertThat(reactive.zCard(ranked).block()).isEqualTo(2L);
+        assertThat(reactive.zScore(ranked, "low").block()).isEqualTo(1.0);
+        assertThat(reactive.zIncr(ranked, "low", 4.0).block()).isEqualTo(5.0);
+        assertThat(reactive.zScore(ranked, "low").block()).isEqualTo(5.0);
+    }
+
+    @Test
+    void synchronousValueVariantsPreserveExpiryAndBatchResults() {
+        String prefix = key("batch");
+        String first = prefix + ":1";
+        String second = prefix + ":2";
+        assertThat(sync.set(first, "11", 30L)).isTrue();
+        assertThat(sync.set(second, "22", Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.getExpire(first)).isBetween(1L, 30L);
+        assertThat(sync.getExpire(second)).isBetween(1L, 30L);
+        assertThat(sync.getLong(first)).isEqualTo(11L);
+        assertThat(sync.getInteger(second)).isEqualTo(22);
+        assertThat(sync.getString(prefix + ":absent", "fallback")).isEqualTo("fallback");
+        assertThat(sync.mGetString(List.of(first, second))).containsExactly("11", "22");
+        assertThat(sync.keys(prefix + ":*")).containsExactlyInAnyOrder(first, second);
+        assertThat(sync.getAndSet(first, "33")).isEqualTo("11");
+        assertThat(sync.getString(first)).isEqualTo("33");
+        assertThat(sync.delPattern(prefix + ":*")).isEqualTo(2L);
+        assertThat(sync.hasKey(first)).isFalse();
+        assertThat(sync.hasKey(second)).isFalse();
+    }
+
+    @Test
+    void reactiveValueVariantsPreserveExpiryAndBatchResults() {
+        String prefix = key("batch-reactive");
+        String first = prefix + ":1";
+        String second = prefix + ":2";
+        assertThat(reactive.set(first, "11", 30L).block()).isTrue();
+        assertThat(reactive.set(second, "22", Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.getExpire(first).block()).isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+        assertThat(reactive.getLong(first).block()).isEqualTo(11L);
+        assertThat(reactive.getInteger(second).block()).isEqualTo(22);
+        assertThat(reactive.mGetString(List.of(first, second)).block()).containsExactly("11", "22");
+        assertThat(reactive.setNx(first, "duplicate", Duration.ofSeconds(30)).block()).isFalse();
+        assertThat(reactive.getString(first).block()).isEqualTo("11");
+        assertThat(reactive.del(first, second).block()).isEqualTo(2L);
+        assertThat(reactive.hasKey(first).block()).isFalse();
+        assertThat(reactive.hasKey(second).block()).isFalse();
+    }
+
+    @Test
+    void synchronousHashCountersAndSetAlgebra() {
+        String hash = key("hash-count");
+        assertThat(sync.hIncr(hash, "hits", 5L)).isEqualTo(5L);
+        assertThat(sync.hDecr(hash, "hits", 2L)).isEqualTo(3L);
+        assertThat(sync.hGetLong(hash, "hits")).isEqualTo(3L);
+        assertThat(sync.hIncr(hash, "ratio", 1.5)).isEqualTo(1.5);
+        assertThat(sync.hGetDouble(hash, "ratio")).isEqualTo(1.5);
+        String left = key("left");
+        String right = key("right");
+        assertThat(sync.sAdd(left, "a", "b")).isEqualTo(2L);
+        assertThat(sync.sAdd(right, "b", "c")).isEqualTo(2L);
+        assertThat(sync.sDiff(left, right)).containsExactly("a");
+        assertThat(sync.sIntersect(left, right)).containsExactly("b");
+        assertThat(sync.sUnion(left, right)).containsExactlyInAnyOrder("a", "b", "c");
+        assertThat(sync.sSize(left)).isEqualTo(2L);
+    }
+
+    @Test
+    void reactiveHashCountersAndSetAlgebra() {
+        String hash = key("hash-count-reactive");
+        assertThat(reactive.hIncr(hash, "hits", 5L).block()).isEqualTo(5L);
+        assertThat(reactive.hDecr(hash, "hits", 2L).block()).isEqualTo(3L);
+        assertThat(reactive.hGetLong(hash, "hits").block()).isEqualTo(3L);
+        assertThat(reactive.hIncr(hash, "ratio", 1.5).block()).isEqualTo(1.5);
+        assertThat(reactive.hGetDouble(hash, "ratio").block()).isEqualTo(1.5);
+        String left = key("left-reactive");
+        String right = key("right-reactive");
+        assertThat(reactive.sAdd(left, "a", "b").block()).isEqualTo(2L);
+        assertThat(reactive.sAdd(right, "b", "c").block()).isEqualTo(2L);
+        assertThat(reactive.sDiff(left, right).collectList().block()).containsExactly("a");
+        assertThat(reactive.sIntersect(left, right).collectList().block()).containsExactly("b");
+        assertThat(reactive.sUnion(left, right).collectList().block()).containsExactlyInAnyOrder("a", "b", "c");
+        assertThat(reactive.sSize(left).block()).isEqualTo(2L);
+    }
+
+    @Test
+    void reactiveSortedSetChangesRanking() {
+        String key = key("zset-reactive");
+        assertThat(reactive.zAdd(key, "one", 1.0).block()).isTrue();
+        assertThat(reactive.zAdd(key, "two", 2.0).block()).isTrue();
+        assertThat(reactive.zRange(key, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("one", "two");
+        assertThat(reactive.zRem(key, "one").block()).isEqualTo(1L);
+        assertThat(reactive.zRange(key, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("two");
+    }
+
+    @Test
+    void geoQueriesReturnNearbyMembersAndMetricDistance() {
+        GeoTemplate geo = new GeoTemplate(sync.getRedisTemplate());
+        String a = key("geo-a");
+        String b = key("geo-b");
+        assertThat(geo.geoAdd(a, 0.0, 0.0)).isEqualTo(1L);
+        assertThat(geo.geoAdd(new Point(0.01, 0.0), b)).isEqualTo(1L);
+        assertThat(geo.distanceValue(a, b)).isBetween(1000.0, 1200.0);
+        assertThat(geo.getCircleUsersByDistance(a, 2000.0,
+                result -> (String) result.getContent().getName())).contains(a, b);
+        assertThat(geo.getCircleUsersByRadius(a, 2000.0,
+                result -> (String) result.getContent().getName())).contains(a, b);
+        assertThat(geo.getWGS84Distance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+    }
+
+    @Test
+    void luaScriptReadsActualStoredValue() {
+        String key = key("lua");
+        sync.set(key, "value");
+        String script = "return redis.call('GET', KEYS[1])";
+        assertThat(sync.executeLuaScript(script, String.class, List.of(key))).isEqualTo("value");
+        assertThat(reactive.executeLuaScript(script, String.class, List.of(key)).block())
+                .isEqualTo("value");
+    }
+
+    @Test
+    void reactiveTimedListWriteActuallySetsExpiry() {
+        String key = key("timed-list");
+        assertThat(reactive.lLeftPush(key, "one", 30L).block()).isEqualTo(1L);
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one");
+        assertThat(reactive.getExpire(key).block())
+                .isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+    }
+
+    @Test
+    void reactiveTimedWritesAcrossCommandFamiliesSetExpiry() {
+        String counter = key("timed-counter");
+        assertThat(reactive.incr(counter, 2L, 30L).block()).isEqualTo(2L);
+        assertThat(reactive.getLong(counter).block()).isEqualTo(2L);
+        assertTimed(counter);
+
+        String hash = key("timed-hash");
+        assertThat(reactive.hmSet(hash, Map.<Object, Object>of("status", "ready"), Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.hGetString(hash, "status").block()).isEqualTo("ready");
+        assertTimed(hash);
+
+        String set = key("timed-set");
+        assertThat(reactive.sAddAndExpire(set, 30L, "member").block()).isEqualTo(1L);
+        assertThat(reactive.sHasKey(set, "member").block()).isTrue();
+        assertTimed(set);
+
+        String ranked = key("timed-zset");
+        assertThat(reactive.zIncr(ranked, "member", 2.0, Duration.ofSeconds(30)).block()).isEqualTo(2.0);
+        assertThat(reactive.zScore(ranked, "member").block()).isEqualTo(2.0);
+        assertTimed(ranked);
+    }
+
+    private void assertTimed(String key) {
+        assertThat(reactive.getExpire(key).block())
+                .isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+    }
+
+    private record TimedWrite(String name, Consumer<String> verify) {}
+
+    @TestFactory
+    Stream<DynamicTest> reactiveTimedOverloadsKeepTheirValueAndExpiry() {
+        return Stream.of(
+                new TimedWrite("increment long duration", key -> {
+                    assertThat(reactive.incr(key, 4L, Duration.ofSeconds(30)).block()).isEqualTo(4L);
+                    assertThat(reactive.getLong(key).block()).isEqualTo(4L);
+                }),
+                new TimedWrite("increment double seconds", key -> {
+                    assertThat(reactive.incr(key, 1.5, 30L).block()).isEqualTo(1.5);
+                    assertThat(reactive.getDouble(key).block()).isEqualTo(1.5);
+                }),
+                new TimedWrite("decrement long seconds", key -> {
+                    assertThat(reactive.decr(key, 2L, 30L).block()).isEqualTo(-2L);
+                    assertThat(reactive.getLong(key).block()).isEqualTo(-2L);
+                }),
+                new TimedWrite("decrement double duration", key -> {
+                    assertThat(reactive.decr(key, 1.25, Duration.ofSeconds(30)).block()).isEqualTo(-1.25);
+                    assertThat(reactive.getDouble(key).block()).isEqualTo(-1.25);
+                }),
+                new TimedWrite("left push duration", key -> {
+                    assertThat(reactive.lLeftPush(key, "one", Duration.ofSeconds(30)).block()).isEqualTo(1L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one");
+                }),
+                new TimedWrite("left push all seconds", key -> {
+                    assertThat(reactive.lLeftPushAll(key, List.of("one", "two"), 30L).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("two", "one");
+                }),
+                new TimedWrite("left push if present duration", key -> {
+                    assertThat(reactive.lLeftPush(key, "one").block()).isEqualTo(1L);
+                    assertThat(reactive.lLeftPushx(key, "zero", Duration.ofSeconds(30)).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("zero", "one");
+                }),
+                new TimedWrite("right push seconds", key -> {
+                    assertThat(reactive.lRightPush(key, "one", 30L).block()).isEqualTo(1L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one");
+                }),
+                new TimedWrite("right push all duration", key -> {
+                    assertThat(reactive.lRightPushAll(key, List.of("one", "two"), Duration.ofSeconds(30)).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one", "two");
+                }),
+                new TimedWrite("right push if present seconds", key -> {
+                    assertThat(reactive.lRightPush(key, "one").block()).isEqualTo(1L);
+                    assertThat(reactive.lRightPushx(key, "two", 30L).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one", "two");
+                }),
+                new TimedWrite("hash set seconds", key -> {
+                    assertThat(reactive.hSet(key, "status", "ready", 30L).block()).isTrue();
+                    assertThat(reactive.hGetString(key, "status").block()).isEqualTo("ready");
+                }),
+                new TimedWrite("hash increment long duration", key -> {
+                    assertThat(reactive.hIncr(key, "hits", 4L, Duration.ofSeconds(30)).block()).isEqualTo(4L);
+                    assertThat(reactive.hGetLong(key, "hits").block()).isEqualTo(4L);
+                }),
+                new TimedWrite("hash increment double seconds", key -> {
+                    assertThat(reactive.hIncr(key, "ratio", 1.5, 30L).block()).isEqualTo(1.5);
+                    assertThat(reactive.hGetDouble(key, "ratio").block()).isEqualTo(1.5);
+                }),
+                new TimedWrite("set add duration", key -> {
+                    assertThat(reactive.sAddAndExpire(key, Duration.ofSeconds(30), "member").block()).isEqualTo(1L);
+                    assertThat(reactive.sHasKey(key, "member").block()).isTrue();
+                }),
+                new TimedWrite("sorted set increment seconds", key -> {
+                    assertThat(reactive.zIncr(key, "member", 1.5, 30L).block()).isEqualTo(1.5);
+                    assertThat(reactive.zScore(key, "member").block()).isEqualTo(1.5);
+                })
+        ).map(write -> DynamicTest.dynamicTest(write.name(), () -> {
+            String key = key("timed-" + write.name().replace(' ', '-'));
+            write.verify().accept(key);
+            assertTimed(key);
+        }));
+    }
+
+    @Test
+    void streamRecordsCanBeReadAndDeletedById() {
+        String stream = key("stream");
+        var first = sync.xAdd(stream, Map.of("event", "created"));
+        var second = sync.xAdd(stream, Map.of("event", "updated"));
+        assertThat(first).isNotNull();
+        assertThat(second).isNotEqualTo(first);
+        assertThat(sync.xLen(stream)).isEqualTo(2L);
+        assertThat(sync.xRange(stream, Range.unbounded()))
+                .extracting(record -> record.getValue().get("event"))
+                .containsExactly("created", "updated");
+        assertThat(sync.xDel(stream, first)).isEqualTo(1L);
+        assertThat(sync.xLen(stream)).isEqualTo(1L);
+        assertThat(sync.xRange(stream, Range.unbounded()))
+                .extracting(record -> record.getValue().get("event"))
+                .containsExactly("updated");
+    }
+
+    @Test
+    void bitmapAndHyperLogLogCommandsUseRealServerState() {
+        String bitmap = key("bitmap");
+        assertThat(sync.getBit(bitmap, 7)).isFalse();
+        assertThat(sync.setBit(bitmap, 7, true)).isFalse();
+        assertThat(sync.getBit(bitmap, 7)).isTrue();
+        assertThat(reactive.getBit(bitmap, 7).block()).isTrue();
+        assertThat(reactive.setBit(bitmap, 7, false).block()).isTrue();
+        assertThat(sync.getBit(bitmap, 7)).isFalse();
+
+        String first = key("hll-1");
+        String second = key("hll-2");
+        assertThat(sync.pfAdd(first, "a", "b")).isEqualTo(1L);
+        assertThat(sync.pfCount(first)).isEqualTo(2L);
+        assertThat(reactive.pfAdd(second, "b", "c").block()).isEqualTo(1L);
+        assertThat(reactive.pfCount(second).block()).isEqualTo(2L);
+        String merged = key("hll-merged");
+        assertThat(sync.pfMerge(merged, first, second)).isEqualTo(3L);
+        assertThat(sync.pfCount(merged)).isEqualTo(3L);
+    }
+
+    @Test
+    void synchronousSetStoreOperationsPersistComputedMembers() {
+        String left = key("set-left-store");
+        String right = key("set-right-store");
+        sync.sAdd(left, "a", "b");
+        sync.sAdd(right, "b", "c");
+        String diff = key("set-diff-store");
+        String intersection = key("set-intersection-store");
+        String union = key("set-union-store");
+        assertThat(sync.sDiffAndStore(left, right, diff)).isEqualTo(1L);
+        assertThat(sync.sGet(diff)).containsExactly("a");
+        assertThat(sync.sIntersectAndStore(left, right, intersection)).isEqualTo(1L);
+        assertThat(sync.sGet(intersection)).containsExactly("b");
+        assertThat(sync.sUnionAndStore(left, right, union)).isEqualTo(3L);
+        assertThat(sync.sGet(union)).containsExactlyInAnyOrder("a", "b", "c");
+    }
+
+    @Test
+    void reactiveSetStoreOperationsPersistComputedMembers() {
+        String left = key("reactive-set-left-store");
+        String right = key("reactive-set-right-store");
+        reactive.sAdd(left, "a", "b").block();
+        reactive.sAdd(right, "b", "c").block();
+        String diff = key("reactive-set-diff-store");
+        String intersection = key("reactive-set-intersection-store");
+        String union = key("reactive-set-union-store");
+        assertThat(reactive.sDiffAndStore(left, right, diff).block()).isEqualTo(1L);
+        assertThat(reactive.sGet(diff).collectList().block()).containsExactly("a");
+        assertThat(reactive.sIntersectAndStore(left, right, intersection).block()).isEqualTo(1L);
+        assertThat(reactive.sGet(intersection).collectList().block()).containsExactly("b");
+        assertThat(reactive.sUnionAndStore(left, right, union).block()).isEqualTo(3L);
+        assertThat(reactive.sGet(union).collectList().block()).containsExactlyInAnyOrder("a", "b", "c");
+    }
+
+    @Test
+    void sortedSetScoreRangesAndStoresPreserveOrderAndScores() {
+        String left = key("z-left");
+        String right = key("z-right");
+        assertThat(sync.zAdd(left, "a", 1.0)).isTrue();
+        assertThat(sync.zAdd(left, "b", 3.0)).isTrue();
+        assertThat(sync.zAdd(right, "b", 2.0)).isTrue();
+        assertThat(sync.zAdd(right, "c", 4.0)).isTrue();
+        assertThat(sync.zCount(left, 1.0, 2.0)).isEqualTo(1L);
+        assertThat(sync.zRangeByScore(left, 2.0, 4.0)).containsExactly("b");
+        assertThat(reactive.zRangeByScore(left, Range.closed(2.0, 4.0)).collectList().block())
+                .containsExactly("b");
+        assertThat(reactive.zRevrange(left, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("b", "a");
+        assertThat(sync.zRevRank(left, "b")).isZero();
+        String intersection = key("z-intersection");
+        assertThat(sync.zIntersectAndStore(left, right, intersection)).isEqualTo(1L);
+        assertThat(sync.zScore(intersection, "b")).isEqualTo(5.0);
+        String union = key("z-union");
+        assertThat(reactive.zUnionAndStore(left, right, union).block()).isEqualTo(3L);
+        assertThat(reactive.zRange(union, Range.closed(0L, 2L)).collectList().block())
+                .containsExactly("a", "c", "b");
+        assertThat(reactive.zScore(union, "b").block()).isEqualTo(5.0);
+        assertThat(reactive.zRemByScore(union, Range.closed(4.0, 5.0)).block()).isEqualTo(2L);
+        assertThat(reactive.zRange(union, Range.closed(0L, 2L)).collectList().block())
+                .containsExactly("a");
+    }
+
+    @Test
+    void keyDiscoveryRenameAndAbsoluteExpiryObserveRealState() {
+        String prefix = key("keys");
+        String original = prefix + ":original";
+        String renamed = prefix + ":renamed";
+        sync.set(original, "value");
+        assertThat(sync.type(original)).isEqualTo(DataType.STRING);
+        assertThat(sync.keys(prefix + ":*")).contains(original);
+        assertThat(sync.scan(prefix + ":*", 10)).contains(original);
+        assertThat(reactive.getKey(prefix + ":*").collectList().block()).contains(original);
+        assertThat(sync.renameIfAbsent(original, renamed)).isTrue();
+        assertThat(sync.hasKey(original)).isFalse();
+        assertThat(sync.getString(renamed)).isEqualTo("value");
+        assertThat(sync.expireAt(renamed, new Date(System.currentTimeMillis() + 30_000))).isTrue();
+        assertThat(sync.getExpire(renamed)).isBetween(1L, 30L);
+        assertThat(reactive.getVagueKey("renamed").collectList().block()).contains(renamed);
+    }
+
+    @Test
+    void wrongRedisTypeFailsWithoutChangingTheOriginalValue() {
+        String key = key("wrong-type");
+        sync.set(key, "plain");
+        assertThatThrownBy(() -> sync.hSet(key, "field", "value"))
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(sync.getString(key)).isEqualTo("plain");
+        assertThatThrownBy(() -> reactive.hSet(key, "field", "value").block())
+                .satisfies(error -> assertThat(error.getCause()).hasMessageContaining("WRONGTYPE"));
+        assertThat(reactive.getString(key).block()).isEqualTo("plain");
+    }
+
+    @Test
+    void synchronousHashBatchReadScanAndDelete() {
+        String hash = key("hash-batch");
+        assertThat(sync.hmSet(hash, Map.of("a", "11", "b", "22"))).isTrue();
+        assertThat(sync.hmGet(hash)).containsEntry("a", "11").containsEntry("b", "22");
+        assertThat(sync.hmGet(hash, List.of("b", "a"))).containsExactly("22", "11");
+        assertThat(sync.hmMultiGet(hash, List.of("a", "b")))
+                .containsEntry("a", "11").containsEntry("b", "22");
+        assertThat(sync.hKeys(hash)).containsExactlyInAnyOrder("a", "b");
+        assertThat(sync.hValues(hash)).containsExactlyInAnyOrder("11", "22");
+        List<Map.Entry<Object, Object>> visited = new ArrayList<>();
+        sync.hScan(hash, visited::add);
+        assertThat(visited).extracting(Map.Entry::getKey).containsExactlyInAnyOrder("a", "b");
+        sync.hDel(hash, "a");
+        assertThat(sync.hHasKey(hash, "a")).isFalse();
+        assertThat(sync.hGet(hash, "b")).isEqualTo("22");
+    }
+
+    @Test
+    void reactiveHashBatchReadAndDelete() {
+        String hash = key("hash-batch-reactive");
+        assertThat(reactive.hmSet(hash, Map.<Object, Object>of("a", "11", "b", "22")).block()).isTrue();
+        assertThat(reactive.hmMultiGet(hash, List.<Object>of("a", "b")).block())
+                .containsEntry("a", "11").containsEntry("b", "22");
+        assertThat(reactive.hMultiGet(hash, List.<Object>of("b", "a")).block())
+                .containsExactly("22", "11");
+        assertThat(reactive.hKeys(hash).collectList().block()).containsExactlyInAnyOrder("a", "b");
+        assertThat(reactive.hDel(hash, "a").block()).isEqualTo(1L);
+        assertThat(reactive.hHasKey(hash, "a").block()).isFalse();
+        assertThat(reactive.hGet(hash, "b").block()).isEqualTo("22");
+    }
+
+    @Test
+    void synchronousListMutationKeepsExpectedPositions() {
+        String list = key("list-mutate");
+        assertThat(sync.lRightPushAll(list, List.of("a", "b", "c"))).isEqualTo(3L);
+        assertThat(sync.lSet(list, 1, "middle")).isTrue();
+        assertThat(sync.lRangeString(list, 0, -1)).containsExactly("a", "middle", "c");
+        assertThat(sync.lRem(list, 1, "middle")).isEqualTo(1L);
+        assertThat(sync.lRangeString(list, 0, -1)).containsExactly("a", "c");
+        assertThat(sync.lTrim(list, 0, 0)).isTrue();
+        assertThat(sync.lRangeString(list, 0, -1)).containsExactly("a");
+    }
+
+    @Test
+    void reactiveListMutationKeepsExpectedPositions() {
+        String list = key("list-mutate-reactive");
+        assertThat(reactive.lRightPushAll(list, List.of("a", "b", "c")).block()).isEqualTo(3L);
+        assertThat(reactive.lSet(list, 1, "middle").block()).isTrue();
+        assertThat(reactive.lRangeString(list, 0, -1).collectList().block())
+                .containsExactly("a", "middle", "c");
+        assertThat(reactive.lRem(list, 1, "middle").block()).isEqualTo(1L);
+        assertThat(reactive.lRangeString(list, 0, -1).collectList().block()).containsExactly("a", "c");
+        assertThat(reactive.lTrim(list, 0, 0).block()).isTrue();
+        assertThat(reactive.lRangeString(list, 0, -1).collectList().block()).containsExactly("a");
+    }
+
+    @Test
+    void synchronousTypedReadsConvertStoredNumericText() {
+        String value = key("typed-value");
+        sync.set(value, "12");
+        assertThat(sync.getLong(value)).isEqualTo(12L);
+        assertThat(sync.getInteger(value)).isEqualTo(12);
+        assertThat(sync.getDouble(value)).isEqualTo(12.0);
+        assertThat(sync.getLong(key("missing-long"), 7L)).isEqualTo(7L);
+        String list = key("typed-list");
+        sync.lRightPushAll(list, List.of("1", "2"));
+        assertThat(sync.lRangeLong(list, 0, -1)).containsExactly(1L, 2L);
+        assertThat(sync.lRangeDouble(list, 0, -1)).containsExactly(1.0, 2.0);
+        String hash = key("typed-hash");
+        sync.hmSet(hash, Map.of("a", "1", "b", "2"));
+        assertThat(sync.hGetLong(hash, "a")).isEqualTo(1L);
+        assertThat(sync.hGetDouble(hash, "b")).isEqualTo(2.0);
+        String set = key("typed-set");
+        sync.sAdd(set, "1", "2");
+        assertThat(sync.sGetLong(set)).containsExactlyInAnyOrder(1L, 2L);
+        String ranked = key("typed-zset");
+        sync.zAdd(ranked, "1", 1.0);
+        sync.zAdd(ranked, "2", 2.0);
+        assertThat(sync.zRangeLong(ranked, 0, -1)).containsExactly(1L, 2L);
+        assertThat(sync.zRangeDoubleByScore(ranked, 1.0, 2.0)).containsExactly(1.0, 2.0);
+    }
+
+    @Test
+    void reactiveTypedReadsConvertStoredNumericText() {
+        String value = key("typed-value-reactive");
+        reactive.set(value, "12").block();
+        assertThat(reactive.getLong(value).block()).isEqualTo(12L);
+        assertThat(reactive.getInteger(value).block()).isEqualTo(12);
+        assertThat(reactive.getDouble(value).block()).isEqualTo(12.0);
+        String list = key("typed-list-reactive");
+        reactive.lRightPushAll(list, List.of("1", "2")).block();
+        assertThat(reactive.lRangeLong(list, 0, -1).collectList().block()).containsExactly(1L, 2L);
+        assertThat(reactive.lRangeDouble(list, 0, -1).collectList().block()).containsExactly(1.0, 2.0);
+        String hash = key("typed-hash-reactive");
+        reactive.hmSet(hash, Map.<Object, Object>of("a", "1", "b", "2")).block();
+        assertThat(reactive.hGetLong(hash, "a").block()).isEqualTo(1L);
+        assertThat(reactive.hGetDouble(hash, "b").block()).isEqualTo(2.0);
+        String set = key("typed-set-reactive");
+        reactive.sAdd(set, "1", "2").block();
+        assertThat(reactive.sGetLong(set).collectList().block()).containsExactlyInAnyOrder(1L, 2L);
+        String ranked = key("typed-zset-reactive");
+        reactive.zAdd(ranked, "1", 1.0).block();
+        reactive.zAdd(ranked, "2", 2.0).block();
+        assertThat(reactive.zRangeLong(ranked, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly(1L, 2L);
+        assertThat(reactive.zRangeDoubleByScore(ranked, Range.closed(1.0, 2.0)).collectList().block())
+                .containsExactly(1.0, 2.0);
+    }
+
+    @Test
+    void stringRangesAndBatchNumericReadsUseActualRedisValues() {
+        String string = key("range");
+        sync.set(string, "hello");
+        assertThat(sync.getRange(string, 0, 1)).isEqualTo("he");
+        sync.setRange(string, "y", 1);
+        assertThat(sync.getString(string)).isEqualTo("hyllo");
+        assertThat(sync.append(string, "!")).isEqualTo(6);
+        assertThat(sync.getStringAndSet(string, "done")).isEqualTo("hyllo!");
+        assertThat(sync.getString(string)).isEqualTo("done");
+
+        String first = key("numeric-one");
+        String second = key("numeric-two");
+        sync.set(first, "1");
+        sync.set(second, "2");
+        assertThat(sync.mGetLong(List.of(first, second))).containsExactly(1L, 2L);
+        assertThat(sync.mGetDouble(List.of(first, second))).containsExactly(1.0, 2.0);
+        assertThat(reactive.mGetLong(List.of(first, second)).block()).containsExactly(1L, 2L);
+        assertThat(reactive.mGetDouble(List.of(first, second)).block()).containsExactly(1.0, 2.0);
+    }
+
+    @Test
+    void distinctListPushMovesExistingMembersWithoutDuplication() {
+        String syncList = key("distinct-sync");
+        sync.lRightPushAll(syncList, List.of("a", "b", "a"));
+        assertThat(sync.lLeftPushDistinct(syncList, "a")).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncList, 0, -1)).containsExactly("a", "b");
+        assertThat(sync.lRightPushDistinct(syncList, "a")).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncList, 0, -1)).containsExactly("b", "a");
+
+        String reactiveList = key("distinct-reactive");
+        reactive.lRightPushAll(reactiveList, List.of("a", "b", "a")).block();
+        assertThat(reactive.lLeftPushDistinct(reactiveList, "a").block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveList, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+        assertThat(reactive.lRightPushDistinct(reactiveList, "a").block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveList, 0, -1).collectList().block())
+                .containsExactly("b", "a");
+    }
+
+    @Test
+    void reactiveRightPushIfPresentCollectionCompletesEveryWriteBeforeExpiry() {
+        String secondsKey = key("pushx-seconds");
+        List<String> seed = List.of("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9");
+        assertThat(reactive.lRightPushAll(secondsKey, seed).block()).isEqualTo(10L);
+        assertThat(reactive.lRightPushxAll(secondsKey, List.of("a", "b", "c"), 30L).block())
+                .isEqualTo(3L);
+        assertThat(reactive.lRangeString(secondsKey, 0, -1).collectList().block())
+                .containsExactly("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "a", "b", "c");
+        assertTimed(secondsKey);
+
+        String durationKey = key("pushx-duration");
+        assertThat(reactive.lRightPushAll(durationKey, seed).block()).isEqualTo(10L);
+        assertThat(reactive.lRightPushxAll(durationKey, List.of("a", "b", "c"), Duration.ZERO).block())
+                .isEqualTo(3L);
+        assertThat(reactive.lRangeString(durationKey, 0, -1).collectList().block())
+                .containsExactly("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "a", "b", "c");
+        assertThat(reactive.getExpire(durationKey).block()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void timedReactiveBatchIsColdAndNonPositiveTimeoutKeepsExistingTtlPolicy() {
+        String key = key("pushx-cold");
+        reactive.lRightPush(key, "seed").block();
+        Mono<Long> pending = reactive.lRightPushxAll(key, List.of("a", "b"), 30L);
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("seed");
+        assertThat(reactive.getExpire(key).block()).isEqualTo(Duration.ZERO);
+        assertThat(pending.block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("seed", "a", "b");
+        assertTimed(key);
+
+        String zero = key("pushx-zero");
+        reactive.lRightPush(zero, "seed").block();
+        assertThat(reactive.lRightPushxAll(zero, List.of("a", "b"), 0L).block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(zero, 0, -1).collectList().block())
+                .containsExactly("seed", "a", "b");
+        assertThat(reactive.getExpire(zero).block()).isEqualTo(Duration.ZERO);
+
+        String negative = key("pushx-negative");
+        reactive.lRightPush(negative, "seed").block();
+        assertThat(reactive.lRightPushxAll(negative, List.of("a", "b"), Duration.ofSeconds(-1)).block())
+                .isEqualTo(2L);
+        assertThat(reactive.lRangeString(negative, 0, -1).collectList().block())
+                .containsExactly("seed", "a", "b");
+        assertThat(reactive.getExpire(negative).block()).isEqualTo(Duration.ZERO);
+        assertThat(reactive.lRightPushxAll(negative, List.<String>of(), Duration.ZERO).block()).isZero();
+        assertThat(reactive.lRangeString(negative, 0, -1).collectList().block())
+                .containsExactly("seed", "a", "b");
+    }
+
+    @Test
+    void timedReactiveBatchDoesNotExpireAfterCommandOrLaterValueFailure() {
+        String wrongType = key("pushx-wrong-type");
+        sync.set(wrongType, "plain");
+        assertThatThrownBy(() -> reactive.lRightPushxAll(wrongType, List.of("a", "b"), 30L).block())
+                .hasCauseInstanceOf(io.lettuce.core.RedisCommandExecutionException.class);
+        assertThat(sync.getString(wrongType)).isEqualTo("plain");
+        assertThat(reactive.getExpire(wrongType).block()).isEqualTo(Duration.ZERO);
+
+        String laterBadValue = key("pushx-later-bad-value");
+        reactive.lRightPush(laterBadValue, "seed").block();
+        assertThatThrownBy(() -> reactive.lRightPushxAll(laterBadValue,
+                List.<Object>of("a", 123), 30L).block()).isInstanceOf(RuntimeException.class);
+        assertThat(reactive.lRangeString(laterBadValue, 0, -1).collectList().block())
+                .containsExactly("seed", "a");
+        assertThat(reactive.getExpire(laterBadValue).block()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void expiryErrorPropagatesAfterSuccessfulWriteWithoutClaimingRollback() {
+        String key = key("expiry-error");
+        ReactiveRedisOperationTemplate failingExpiry = new ReactiveRedisOperationTemplate(
+                reactive.getReactiveRedisTemplate(), new ObjectMapper()) {
+            @Override
+            public Mono<Boolean> expire(String key, long seconds) {
+                return Mono.error(new RedisOperationException("expiry rejected"));
+            }
+        };
+        assertThatThrownBy(() -> failingExpiry.lRightPush(key, "value", 30L).block())
+                .isInstanceOf(RedisOperationException.class)
+                .hasMessageContaining("expiry rejected");
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block())
+                .containsExactly("value");
+        assertThat(reactive.getExpire(key).block()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void updatingExistingHashFieldReturnsFalseButStillSetsExpiry() {
+        String key = key("hash-update-ttl");
+        assertThat(reactive.hSet(key, "field", "old").block()).isTrue();
+        assertThat(reactive.hSet(key, "field", "new", Duration.ofSeconds(30)).block()).isFalse();
+        assertThat(reactive.hGetString(key, "field").block()).isEqualTo("new");
+        assertTimed(key);
+    }
+
+    @Test
+    void reactiveGeoDistanceHelpersUseMeters() {
+        ReactiveGeoTemplate geo = new ReactiveGeoTemplate();
+        assertThat(geo.getDistance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+        assertThat(geo.getSphereDistance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+        assertThat(geo.getWGS84Distance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+    }
+
+    @Test
+    void synchronousHashCounterOverloadsPreserveTypeValueAndExpiry() {
+        String integer = key("hash-int-overloads");
+        assertThat(sync.hIncr(integer, "count", 2)).isEqualTo(2L);
+        assertThat(sync.hIncr(integer, "count", 3, 30L)).isEqualTo(5L);
+        assertThat(sync.hIncr(integer, "count", 4, Duration.ofSeconds(30))).isEqualTo(9L);
+        assertThat(sync.hDecr(integer, "count", 1)).isEqualTo(8L);
+        assertThat(sync.hGetLong(integer, "count")).isEqualTo(8L);
+        assertThat(sync.getExpire(integer)).isBetween(1L, 30L);
+
+        String longCounter = key("hash-long-overloads");
+        assertThat(sync.hIncr(longCounter, "count", 2L)).isEqualTo(2L);
+        assertThat(sync.hIncr(longCounter, "count", 3L, 30L)).isEqualTo(5L);
+        assertThat(sync.hIncr(longCounter, "count", 4L, Duration.ofSeconds(30))).isEqualTo(9L);
+        assertThat(sync.hDecr(longCounter, "count", 2L)).isEqualTo(7L);
+        assertThat(sync.hGetLong(longCounter, "count")).isEqualTo(7L);
+        assertThat(sync.getExpire(longCounter)).isBetween(1L, 30L);
+
+        String decimal = key("hash-decimal-overloads");
+        assertThat(sync.hIncr(decimal, "count", 1.25)).isEqualTo(1.25);
+        assertThat(sync.hIncr(decimal, "count", 1.5, 30L)).isEqualTo(2.75);
+        assertThat(sync.hIncr(decimal, "count", 2.0, Duration.ofSeconds(30))).isEqualTo(4.75);
+        assertThat(sync.hDecr(decimal, "count", 0.5)).isEqualTo(4.25);
+        assertThat(sync.hGetDouble(decimal, "count")).isEqualTo(4.25);
+        assertThat(sync.getExpire(decimal)).isBetween(1L, 30L);
+        assertThatThrownBy(() -> sync.hIncr(decimal, "count", -1L))
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(sync.hGetDouble(decimal, "count")).isEqualTo(4.25);
+    }
+
+    @Test
+    void reactiveHashCounterOverloadsPreserveTypeValueAndExpiry() {
+        String integer = key("reactive-hash-int-overloads");
+        assertThat(reactive.hIncr(integer, "count", 2).block()).isEqualTo(2L);
+        assertThat(reactive.hIncr(integer, "count", 3, 30L).block()).isEqualTo(5L);
+        assertThat(reactive.hIncr(integer, "count", 4, Duration.ofSeconds(30)).block()).isEqualTo(9L);
+        assertThat(reactive.hDecr(integer, "count", 1).block()).isEqualTo(8L);
+        assertThat(reactive.hGetLong(integer, "count").block()).isEqualTo(8L);
+        assertTimed(integer);
+
+        String longCounter = key("reactive-hash-long-overloads");
+        assertThat(reactive.hIncr(longCounter, "count", 2L).block()).isEqualTo(2L);
+        assertThat(reactive.hIncr(longCounter, "count", 3L, 30L).block()).isEqualTo(5L);
+        assertThat(reactive.hIncr(longCounter, "count", 4L, Duration.ofSeconds(30)).block()).isEqualTo(9L);
+        assertThat(reactive.hDecr(longCounter, "count", 2L).block()).isEqualTo(7L);
+        assertThat(reactive.hGetLong(longCounter, "count").block()).isEqualTo(7L);
+        assertTimed(longCounter);
+
+        String decimal = key("reactive-hash-decimal-overloads");
+        assertThat(reactive.hIncr(decimal, "count", 1.25).block()).isEqualTo(1.25);
+        assertThat(reactive.hIncr(decimal, "count", 1.5, 30L).block()).isEqualTo(2.75);
+        assertThat(reactive.hIncr(decimal, "count", 2.0, Duration.ofSeconds(30)).block()).isEqualTo(4.75);
+        assertThat(reactive.hDecr(decimal, "count", 0.5).block()).isEqualTo(4.25);
+        assertThat(reactive.hGetDouble(decimal, "count").block()).isEqualTo(4.25);
+        assertTimed(decimal);
+        assertThatThrownBy(() -> reactive.hIncr(decimal, "count", -1L).block())
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(reactive.hGetDouble(decimal, "count").block()).isEqualTo(4.25);
+    }
+
+    @Test
+    void synchronousValueCounterOverloadsPreserveNumericValuesAndExpiry() {
+        String whole = key("value-whole-counter");
+        assertThat(sync.incr(whole, 2L)).isEqualTo(2L);
+        assertThat(sync.incr(whole, 3L, 30L)).isEqualTo(5L);
+        assertThat(sync.incr(whole, 4L, Duration.ofSeconds(30))).isEqualTo(9L);
+        assertThat(sync.decr(whole, 1L)).isEqualTo(8L);
+        assertThat(sync.decr(whole, 2L, 30L)).isEqualTo(6L);
+        assertThat(sync.decr(whole, 3L, Duration.ofSeconds(30))).isEqualTo(3L);
+        assertThat(sync.getLong(whole)).isEqualTo(3L);
+        assertThat(sync.getExpire(whole)).isBetween(1L, 30L);
+
+        String decimal = key("value-decimal-counter");
+        assertThat(sync.incr(decimal, 1.25)).isEqualTo(1.25);
+        assertThat(sync.incr(decimal, 1.5, 30L)).isEqualTo(2.75);
+        assertThat(sync.incr(decimal, 2.0, Duration.ofSeconds(30))).isEqualTo(4.75);
+        assertThat(sync.decr(decimal, 0.5)).isEqualTo(4.25);
+        assertThat(sync.decr(decimal, 0.25, 30L)).isEqualTo(4.0);
+        assertThat(sync.decr(decimal, 0.5, Duration.ofSeconds(30))).isEqualTo(3.5);
+        assertThat(sync.getDouble(decimal)).isEqualTo(3.5);
+        assertThat(sync.getExpire(decimal)).isBetween(1L, 30L);
+        assertThatThrownBy(() -> sync.incr(whole, -1L)).isInstanceOf(RedisOperationException.class);
+        assertThat(sync.getLong(whole)).isEqualTo(3L);
+    }
+
+    @Test
+    void reactiveValueCounterOverloadsPreserveNumericValuesAndExpiry() {
+        String whole = key("reactive-value-whole-counter");
+        assertThat(reactive.incr(whole, 2L).block()).isEqualTo(2L);
+        assertThat(reactive.incr(whole, 3L, 30L).block()).isEqualTo(5L);
+        assertThat(reactive.incr(whole, 4L, Duration.ofSeconds(30)).block()).isEqualTo(9L);
+        assertThat(reactive.decr(whole, 1L).block()).isEqualTo(8L);
+        assertThat(reactive.decr(whole, 2L, 30L).block()).isEqualTo(6L);
+        assertThat(reactive.decr(whole, 3L, Duration.ofSeconds(30)).block()).isEqualTo(3L);
+        assertThat(reactive.getLong(whole).block()).isEqualTo(3L);
+        assertTimed(whole);
+
+        String decimal = key("reactive-value-decimal-counter");
+        assertThat(reactive.incr(decimal, 1.25).block()).isEqualTo(1.25);
+        assertThat(reactive.incr(decimal, 1.5, 30L).block()).isEqualTo(2.75);
+        assertThat(reactive.incr(decimal, 2.0, Duration.ofSeconds(30)).block()).isEqualTo(4.75);
+        assertThat(reactive.decr(decimal, 0.5).block()).isEqualTo(4.25);
+        assertThat(reactive.decr(decimal, 0.25, 30L).block()).isEqualTo(4.0);
+        assertThat(reactive.decr(decimal, 0.5, Duration.ofSeconds(30)).block()).isEqualTo(3.5);
+        assertThat(reactive.getDouble(decimal).block()).isEqualTo(3.5);
+        assertTimed(decimal);
+        assertThatThrownBy(() -> reactive.incr(whole, -1L).block())
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(reactive.getLong(whole).block()).isEqualTo(3L);
+    }
+
+    @Test
+    void synchronousPushIfPresentBatchActuallyWritesEveryMember() {
+        String right = key("sync-pushx-right");
+        sync.lRightPush(right, "seed");
+        assertThat(sync.lRightPushxAll(right, List.of("a", "b", "c"), 30L)).isEqualTo(3L);
+        assertThat(sync.lRangeString(right, 0, -1)).containsExactly("seed", "a", "b", "c");
+        assertThat(sync.getExpire(right)).isBetween(1L, 30L);
+
+        String left = key("sync-pushx-left");
+        sync.lLeftPush(left, "seed");
+        assertThat(sync.lLeftPushxAll(left, List.of("a", "b", "c"), Duration.ofSeconds(30)))
+                .isEqualTo(3L);
+        assertThat(sync.lRangeString(left, 0, -1)).containsExactly("c", "b", "a", "seed");
+        assertThat(sync.getExpire(left)).isBetween(1L, 30L);
+
+        String rightDuration = key("sync-pushx-right-duration");
+        sync.lRightPush(rightDuration, "seed");
+        assertThat(sync.lRightPushxAll(rightDuration, List.of("a", "b"), Duration.ofSeconds(30)))
+                .isEqualTo(2L);
+        assertThat(sync.lRangeString(rightDuration, 0, -1)).containsExactly("seed", "a", "b");
+        assertThat(sync.getExpire(rightDuration)).isBetween(1L, 30L);
+
+        String leftSeconds = key("sync-pushx-left-seconds");
+        sync.lLeftPush(leftSeconds, "seed");
+        assertThat(sync.lLeftPushxAll(leftSeconds, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.lRangeString(leftSeconds, 0, -1)).containsExactly("b", "a", "seed");
+        assertThat(sync.getExpire(leftSeconds)).isBetween(1L, 30L);
+
+        String missing = key("sync-pushx-missing");
+        assertThat(sync.lRightPushxAll(missing, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.hasKey(missing)).isFalse();
+        assertThat(sync.lLeftPushxAll(leftSeconds, List.<String>of(), Duration.ofSeconds(30)))
+                .isZero();
+        assertThat(sync.lRangeString(leftSeconds, 0, -1)).containsExactly("b", "a", "seed");
+    }
+
+    @Test
+    void batchListPopReturnsRemovedMembersAndLeavesTheRest() {
+        String syncLeft = key("sync-pop-left");
+        sync.lRightPushAll(syncLeft, List.of("a", "b", "c", "d"));
+        assertThat(sync.lLeftPop(syncLeft, 2)).containsExactly("a", "b");
+        assertThat(sync.lRangeString(syncLeft, 0, -1)).containsExactly("c", "d");
+
+        String syncRight = key("sync-pop-right");
+        sync.lRightPushAll(syncRight, List.of("a", "b", "c", "d"));
+        assertThat(sync.lRightPop(syncRight, 2)).containsExactly("c", "d");
+        assertThat(sync.lRangeString(syncRight, 0, -1)).containsExactly("a", "b");
+
+        String reactiveLeft = key("reactive-pop-left");
+        reactive.lRightPushAll(reactiveLeft, List.of("a", "b", "c", "d")).block();
+        assertThat(reactive.lLeftPop(reactiveLeft, 2).collectList().block()).containsExactly("a", "b");
+        assertThat(reactive.lRangeString(reactiveLeft, 0, -1).collectList().block())
+                .containsExactly("c", "d");
+
+        String reactiveRight = key("reactive-pop-right");
+        reactive.lRightPushAll(reactiveRight, List.of("a", "b", "c", "d")).block();
+        assertThat(reactive.lRightPop(reactiveRight, 2).collectList().block()).containsExactly("c", "d");
+        assertThat(reactive.lRangeString(reactiveRight, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+
+        assertThat(sync.lLeftPop(syncLeft, 0)).isEmpty();
+        assertThat(sync.lRightPop(syncRight, 0)).isEmpty();
+        assertThat(reactive.lLeftPop(reactiveLeft, 0).collectList().block()).isEmpty();
+        assertThat(reactive.lRightPop(reactiveRight, 0).collectList().block()).isEmpty();
+        assertThat(sync.lRangeString(syncLeft, 0, -1)).containsExactly("c", "d");
+        assertThat(reactive.lRangeString(reactiveRight, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+
+        assertThat(sync.lRightPop(syncRight, 10)).containsExactly("a", "b");
+        assertThat(sync.hasKey(syncRight)).isFalse();
+        assertThat(reactive.lLeftPop(reactiveLeft, 10).collectList().block())
+                .containsExactly("c", "d");
+        assertThat(reactive.hasKey(reactiveLeft).block()).isFalse();
+    }
+
+    @Test
+    void hashWritesAcrossKeysRespectNxAndExpireWithoutLosingValues() {
+        String first = key("hash-pipeline-a");
+        String second = key("hash-pipeline-b");
+        assertThat(sync.hSet(List.of(first, second), "shared", "one")).isTrue();
+        assertThat(sync.hGet(first, "shared")).isEqualTo("one");
+        assertThat(sync.hGet(second, "shared")).isEqualTo("one");
+        assertThat(sync.hSetNX(first, "shared", "replacement")).isFalse();
+        assertThat(sync.hSetNX(first, "new", "two")).isTrue();
+        assertThat(sync.hSet(first, "timed", "three", 30L)).isTrue();
+        assertThat(sync.hSet(second, "timed", "four", Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.hSize(first)).isEqualTo(3L);
+        assertThat(sync.hGet(first, "shared")).isEqualTo("one");
+        assertThat(sync.hGet(first, "new")).isEqualTo("two");
+        assertThat(sync.getExpire(first)).isBetween(1L, 30L);
+        assertThat(sync.getExpire(second)).isBetween(1L, 30L);
+
+        String reactiveKey = key("hash-reactive-nx");
+        assertThat(reactive.hSet(reactiveKey, "shared", "one", 30L).block()).isTrue();
+        assertThat(reactive.hSetNX(reactiveKey, "shared", "replacement").block()).isFalse();
+        assertThat(reactive.hSetNX(reactiveKey, "new", "two").block()).isTrue();
+        assertThat(reactive.hSet(reactiveKey, "timed", "three", Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.hSize(reactiveKey).block()).isEqualTo(3L);
+        assertThat(reactive.hGet(reactiveKey, "shared").block()).isEqualTo("one");
+        assertThat(reactive.hGet(reactiveKey, "new").block()).isEqualTo("two");
+        assertTimed(reactiveKey);
+    }
+
+    @Test
+    void sortedSetTimedWritesKeepScoresAndRankOrder() {
+        String key = key("zset-timed-sync");
+        assertThat(sync.zAdd(key, "low", 1.0, 30L)).isTrue();
+        assertThat(sync.zAdd(key, "high", 3.0, Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.zIncr(key, "low", 1.0, 30L)).isEqualTo(2.0);
+        assertThat(sync.zIncr(key, "low", 2.0, Duration.ofSeconds(30))).isEqualTo(4.0);
+        assertThat(sync.zRange(key, 0, -1)).containsExactly("high", "low");
+        assertThat(sync.zScore(key, "low")).isEqualTo(4.0);
+        assertThat(sync.getExpire(key)).isBetween(1L, 30L);
+
+        String reactiveKey = key("zset-timed-reactive");
+        assertThat(reactive.zAdd(reactiveKey, "low", 1.0).block()).isTrue();
+        assertThat(reactive.zAdd(reactiveKey, "high", 3.0).block()).isTrue();
+        assertThat(reactive.zIncr(reactiveKey, "low", 1.0, 30L).block()).isEqualTo(2.0);
+        assertThat(reactive.zIncr(reactiveKey, "low", 2.0, Duration.ofSeconds(30)).block()).isEqualTo(4.0);
+        assertThat(reactive.zRange(reactiveKey, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("high", "low");
+        assertThat(reactive.zScore(reactiveKey, "low").block()).isEqualTo(4.0);
+        assertTimed(reactiveKey);
+    }
+
+    @Test
+    void listPushOverloadsAndMovesPreserveOrderAndExpiry() {
+        String syncKey = key("list-overloads-sync");
+        assertThat(sync.lLeftPush(syncKey, "middle", 30L)).isEqualTo(1L);
+        assertThat(sync.lRightPush(syncKey, "right", Duration.ofSeconds(30))).isEqualTo(2L);
+        assertThat(sync.lLeftPush(syncKey, "left", Duration.ofSeconds(30))).isEqualTo(3L);
+        assertThat(sync.lRightPush(syncKey, "tail", 30L)).isEqualTo(4L);
+        assertThat(sync.lRangeString(syncKey, 0, -1))
+                .containsExactly("left", "middle", "right", "tail");
+        String syncDestination = key("list-overloads-sync-destination");
+        assertThat(sync.lRightPopAndLeftPush(syncKey, syncDestination)).isEqualTo("tail");
+        assertThat(sync.lRangeString(syncKey, 0, -1)).containsExactly("left", "middle", "right");
+        assertThat(sync.lRangeString(syncDestination, 0, -1)).containsExactly("tail");
+        assertThat(sync.getExpire(syncKey)).isBetween(1L, 30L);
+
+        String reactiveKey = key("list-overloads-reactive");
+        assertThat(reactive.lLeftPush(reactiveKey, "middle", 30L).block()).isEqualTo(1L);
+        assertThat(reactive.lRightPush(reactiveKey, "right", Duration.ofSeconds(30)).block()).isEqualTo(2L);
+        assertThat(reactive.lLeftPush(reactiveKey, "left", Duration.ofSeconds(30)).block()).isEqualTo(3L);
+        assertThat(reactive.lRightPush(reactiveKey, "tail", 30L).block()).isEqualTo(4L);
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("left", "middle", "right", "tail");
+        String reactiveDestination = key("list-overloads-reactive-destination");
+        assertThat(reactive.lRightPopAndLeftPush(reactiveKey, reactiveDestination).block())
+                .isEqualTo("tail");
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("left", "middle", "right");
+        assertThat(reactive.lRangeString(reactiveDestination, 0, -1).collectList().block())
+                .containsExactly("tail");
+        assertTimed(reactiveKey);
+    }
+
+    @Test
+    void listTypedIndicesAndRangesReadStoredNumbersWithoutChangingTheList() {
+        String syncKey = key("list-typed-index-sync");
+        assertThat(sync.lRightPushAll(syncKey, List.of("2", "4", "6"))).isEqualTo(3L);
+        assertThat(sync.lIndexLong(syncKey, 0)).isEqualTo(2L);
+        assertThat(sync.lIndexInteger(syncKey, 1)).isEqualTo(4);
+        assertThat(sync.lIndexDouble(syncKey, -1)).isEqualTo(6.0);
+        assertThat((Integer) sync.lIndexFor(syncKey, 1, value -> Integer.parseInt((String) value) * 2))
+                .isEqualTo(8);
+        assertThat(sync.lRangeInteger(syncKey, 0, -1)).containsExactly(2, 4, 6);
+        assertThat(sync.lRangeFor(syncKey, 0, -1, value -> Integer.parseInt((String) value) + 1))
+                .containsExactly(3, 5, 7);
+        assertThat(sync.glIndexString(syncKey, 20, "missing")).isEqualTo("missing");
+        assertThat(sync.lIndexLong(syncKey, 20, 42L)).isEqualTo(42L);
+        assertThat(sync.lIndexInteger(syncKey, 20, 42)).isEqualTo(42);
+        assertThat(sync.lIndexDouble(syncKey, 20, 42.0)).isEqualTo(42.0);
+        assertThat(sync.lRangeString(syncKey, 0, -1)).containsExactly("2", "4", "6");
+
+        String reactiveKey = key("list-typed-index-reactive");
+        assertThat(reactive.lRightPushAll(reactiveKey, List.of("2", "4", "6")).block()).isEqualTo(3L);
+        assertThat(reactive.lRangeInteger(reactiveKey, 0, -1).collectList().block())
+                .containsExactly(2, 4, 6);
+        assertThat(reactive.lRangeFor(reactiveKey, 0, -1,
+                value -> Integer.parseInt((String) value) + 1).collectList().block())
+                .containsExactly(3, 5, 7);
+        assertThat(reactive.lIndex(reactiveKey, -1).block()).isEqualTo("6");
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("2", "4", "6");
+    }
+
+    @Test
+    void hashTypedReadsAndDefaultsReflectPersistedValuesAcrossKeys() {
+        String first = key("hash-typed-a");
+        String second = key("hash-typed-b");
+        assertThat(sync.hmSet(first, Map.of("count", "2", "ratio", "1.5"))).isTrue();
+        assertThat(sync.hmSet(second, Map.of("count", "4", "ratio", "2.5"))).isTrue();
+        assertThat(sync.hGetLong(first, "count")).isEqualTo(2L);
+        assertThat(sync.hGetInteger(second, "count")).isEqualTo(4);
+        assertThat(sync.hGetDouble(first, "ratio")).isEqualTo(1.5);
+        assertThat(sync.hGetString(first, "count")).isEqualTo("2");
+        assertThat(sync.hGetLong(first, "absent", 9L)).isEqualTo(9L);
+        assertThat(sync.hGetInteger(first, "absent", 9)).isEqualTo(9);
+        assertThat(sync.hGetDouble(first, "absent", 9.5)).isEqualTo(9.5);
+        assertThat(sync.hGetString(first, "absent", "none")).isEqualTo("none");
+        assertThat(sync.hGetLong(List.of(first, second), "count")).containsExactly(2L, 4L);
+        assertThat(sync.hGetInteger(List.of(first, second), "count")).containsExactly(2, 4);
+        assertThat(sync.hGetDouble(List.of(first, second), "ratio")).containsExactly(1.5, 2.5);
+        assertThat(sync.hGetString(List.of(first, second), "count")).containsExactly("2", "4");
+        assertThat(sync.hMultiGetLong(List.of(first, second), "count")).containsExactly(2L, 4L);
+        assertThat(sync.hMultiGetString(List.of(first, second), "count")).containsExactly("2", "4");
+        assertThat(sync.hGet(first, "count")).isEqualTo("2");
+
+        String reactiveFirst = key("hash-typed-reactive-a");
+        String reactiveSecond = key("hash-typed-reactive-b");
+        assertThat(reactive.hmSet(reactiveFirst, Map.<Object, Object>of("count", "2", "ratio", "1.5")).block()).isTrue();
+        assertThat(reactive.hmSet(reactiveSecond, Map.<Object, Object>of("count", "4", "ratio", "2.5")).block()).isTrue();
+        assertThat(reactive.hGetLong(reactiveFirst, "count").block()).isEqualTo(2L);
+        assertThat(reactive.hGetInteger(reactiveSecond, "count").block()).isEqualTo(4);
+        assertThat(reactive.hGetDouble(reactiveFirst, "ratio").block()).isEqualTo(1.5);
+        assertThat(reactive.hGetLong(reactiveFirst, "absent", 9L).block()).isEqualTo(9L);
+        assertThat(reactive.hGetInteger(reactiveFirst, "absent", 9).block()).isEqualTo(9);
+        assertThat(reactive.hGetDouble(reactiveFirst, "absent", 9.5).block()).isEqualTo(9.5);
+        assertThat(reactive.hGetString(reactiveFirst, "absent", "none").block()).isEqualTo("none");
+        assertThat(reactive.hGetLong(List.of(reactiveFirst, reactiveSecond), "count").collectList().block())
+                .containsExactly(2L, 4L);
+        assertThat(reactive.hGetInteger(List.of(reactiveFirst, reactiveSecond), "count").collectList().block())
+                .containsExactly(2, 4);
+        assertThat(reactive.hGetDouble(List.of(reactiveFirst, reactiveSecond), "ratio").collectList().block())
+                .containsExactly(1.5, 2.5);
+        assertThat(reactive.hGetString(List.of(reactiveFirst, reactiveSecond), "count").collectList().block())
+                .containsExactly("2", "4");
+        assertThat(reactive.hGet(reactiveFirst, "count").block()).isEqualTo("2");
+    }
+
+    @Test
+    void hashBulkWritesPersistEachRequestedKeyAndField() {
+        String first = key("hash-bulk-sync-a");
+        String second = key("hash-bulk-sync-b");
+        assertThat(sync.hMultiSet(List.of(first, second), "status", "ready")).isTrue();
+        assertThat(sync.hGet(first, "status")).isEqualTo("ready");
+        assertThat(sync.hGet(second, "status")).isEqualTo("ready");
+        assertThat(sync.hMultiSet(List.<String>of(), "status", "ignored")).isFalse();
+        assertThat(sync.hmSet(first, Map.of("count", "2"), 30L)).isTrue();
+        assertThat(sync.hmSet(second, Map.of("count", "4"), Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.hGetLong(first, "count")).isEqualTo(2L);
+        assertThat(sync.hGetLong(second, "count")).isEqualTo(4L);
+        assertThat(sync.getExpire(first)).isBetween(1L, 30L);
+        assertThat(sync.getExpire(second)).isBetween(1L, 30L);
+
+        String reactiveKey = key("hash-bulk-reactive");
+        assertThat(reactive.hmMultiSet(reactiveKey, List.<Object>of("a", "b"), "shared").block())
+                .isTrue();
+        assertThat(reactive.hGet(reactiveKey, "a").block()).isEqualTo("shared");
+        assertThat(reactive.hGet(reactiveKey, "b").block()).isEqualTo("shared");
+        assertThat(reactive.hmMultiSet(reactiveKey, List.<Object>of("a", "b"), "updated").block())
+                .isTrue();
+        assertThat(reactive.hGet(reactiveKey, "a").block()).isEqualTo("updated");
+        assertThat(reactive.hGet(reactiveKey, "b").block()).isEqualTo("updated");
+        assertThat(reactive.hmMultiSet(reactiveKey, List.of(), "ignored").block()).isFalse();
+        assertThat(reactive.hmSet(reactiveKey, Map.<Object, Object>of("count", "2"), 30L).block())
+                .isTrue();
+        assertThat(reactive.hGetLong(reactiveKey, "count").block()).isEqualTo(2L);
+        assertTimed(reactiveKey);
+    }
+
+    @Test
+    void setAlgebraAndRemovalMatchStoredMembership() {
+        String left = key("set-algebra-a");
+        String right = key("set-algebra-b");
+        assertThat(sync.sAdd(left, "a", "b", "c")).isEqualTo(3L);
+        assertThat(sync.sAdd(right, "b", "d")).isEqualTo(2L);
+        assertThat(sync.sSize(left)).isEqualTo(3L);
+        assertThat(sync.sDiff(left, right)).containsExactlyInAnyOrder("a", "c");
+        assertThat(sync.sIntersect(left, right)).containsExactly("b");
+        assertThat(sync.sUnion(left, right)).containsExactlyInAnyOrder("a", "b", "c", "d");
+        assertThat(sync.sRandomDistinct(left, 2)).hasSize(2).isSubsetOf("a", "b", "c");
+        assertThat(sync.sRemove(left, "a", "c")).isEqualTo(2L);
+        assertThat(sync.sGet(left)).containsExactly("b");
+        assertThat(sync.sHasKey(left, "a")).isFalse();
+
+        String reactiveLeft = key("set-algebra-reactive-a");
+        String reactiveRight = key("set-algebra-reactive-b");
+        assertThat(reactive.sAdd(reactiveLeft, "a", "b", "c").block()).isEqualTo(3L);
+        assertThat(reactive.sAdd(reactiveRight, "b", "d").block()).isEqualTo(2L);
+        assertThat(reactive.sSize(reactiveLeft).block()).isEqualTo(3L);
+        assertThat(reactive.sDiff(reactiveLeft, reactiveRight).collectList().block())
+                .containsExactlyInAnyOrder("a", "c");
+        assertThat(reactive.sIntersect(reactiveLeft, reactiveRight).collectList().block())
+                .containsExactly("b");
+        assertThat(reactive.sUnion(reactiveLeft, reactiveRight).collectList().block())
+                .containsExactlyInAnyOrder("a", "b", "c", "d");
+        assertThat(reactive.sRandomSetDistinct(reactiveLeft, 2).collectList().block())
+                .hasSize(2).isSubsetOf("a", "b", "c");
+        assertThat(reactive.sRemove(reactiveLeft, "a", "c").block()).isEqualTo(2L);
+        assertThat(reactive.sGet(reactiveLeft).collectList().block()).containsExactly("b");
+        assertThat(reactive.sHasKey(reactiveLeft, "a").block()).isFalse();
+    }
+
+    @Test
+    void timedBatchListPushesPreserveEveryMemberAndExpiry() {
+        String syncLeftSeconds = key("sync-list-left-batch-seconds");
+        assertThat(sync.lLeftPushAll(syncLeftSeconds, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncLeftSeconds, 0, -1)).containsExactly("b", "a");
+        assertThat(sync.getExpire(syncLeftSeconds)).isBetween(1L, 30L);
+        String syncLeftDuration = key("sync-list-left-batch-duration");
+        assertThat(sync.lLeftPushAll(syncLeftDuration, List.of("a", "b"), Duration.ofSeconds(30)))
+                .isEqualTo(2L);
+        assertThat(sync.lRangeString(syncLeftDuration, 0, -1)).containsExactly("b", "a");
+        assertThat(sync.getExpire(syncLeftDuration)).isBetween(1L, 30L);
+        String syncRightSeconds = key("sync-list-right-batch-seconds");
+        assertThat(sync.lRightPushAll(syncRightSeconds, List.of("a", "b"), 30L)).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncRightSeconds, 0, -1)).containsExactly("a", "b");
+        assertThat(sync.getExpire(syncRightSeconds)).isBetween(1L, 30L);
+        String syncRightDuration = key("sync-list-right-batch-duration");
+        assertThat(sync.lRightPushAll(syncRightDuration, List.of("a", "b"), Duration.ofSeconds(30)))
+                .isEqualTo(2L);
+        assertThat(sync.lRangeString(syncRightDuration, 0, -1)).containsExactly("a", "b");
+        assertThat(sync.getExpire(syncRightDuration)).isBetween(1L, 30L);
+
+        String reactiveLeftDuration = key("reactive-list-left-batch-duration");
+        assertThat(reactive.lLeftPushAll(reactiveLeftDuration, List.of("a", "b"), Duration.ofSeconds(30)).block())
+                .isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveLeftDuration, 0, -1).collectList().block())
+                .containsExactly("b", "a");
+        assertTimed(reactiveLeftDuration);
+        String reactiveRightSeconds = key("reactive-list-right-batch-seconds");
+        assertThat(reactive.lRightPushAll(reactiveRightSeconds, List.of("a", "b"), 30L).block())
+                .isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveRightSeconds, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+        assertTimed(reactiveRightSeconds);
+    }
+
+    @Test
+    void pushIfPresentOverloadsOnlyAppendToExistingLists() {
+        String syncKey = key("sync-list-pushx-single");
+        assertThat(sync.lRightPush(syncKey, "seed")).isEqualTo(1L);
+        assertThat(sync.lLeftPushx(syncKey, "a", 30L)).isEqualTo(2L);
+        assertThat(sync.lRightPushx(syncKey, "b", 30L)).isEqualTo(3L);
+        assertThat(sync.lLeftPushx(syncKey, "c", Duration.ofSeconds(30))).isEqualTo(4L);
+        assertThat(sync.lRightPushx(syncKey, "d", Duration.ofSeconds(30))).isEqualTo(5L);
+        assertThat(sync.lRangeString(syncKey, 0, -1)).containsExactly("c", "a", "seed", "b", "d");
+        assertThat(sync.getExpire(syncKey)).isBetween(1L, 30L);
+
+        String reactiveKey = key("reactive-list-pushx-single");
+        assertThat(reactive.lRightPush(reactiveKey, "seed").block()).isEqualTo(1L);
+        assertThat(reactive.lLeftPushx(reactiveKey, "a", 30L).block()).isEqualTo(2L);
+        assertThat(reactive.lRightPushx(reactiveKey, "b", Duration.ofSeconds(30)).block()).isEqualTo(3L);
+        assertThat(reactive.lRangeString(reactiveKey, 0, -1).collectList().block())
+                .containsExactly("a", "seed", "b");
+        assertTimed(reactiveKey);
+    }
+
+    @Test
+    void configuredReactiveTemplateSerializesRealValuesAndHashFields() {
+        RedisReactiveCachingConfiguration configuration = new RedisReactiveCachingConfiguration();
+        Jackson2JsonRedisSerializer<Object> json = new Jackson2JsonRedisSerializer<>(
+                new ObjectMapper(), Object.class);
+        ReactiveRedisTemplate<String, Object> configured = configuration.reactiveRedisTemplate(connection, json);
+        String valueKey = key("configured-reactive-value");
+        assertThat(configured.opsForValue().set(valueKey, "ready").block()).isTrue();
+        assertThat(configured.opsForValue().get(valueKey).block()).isEqualTo("ready");
+        String hashKey = key("configured-reactive-hash");
+        assertThat(configured.opsForHash().put(hashKey, "status", "ready").block()).isTrue();
+        assertThat(configured.opsForHash().get(hashKey, "status").block()).isEqualTo("ready");
+        try (GenericApplicationContext context = new GenericApplicationContext()) {
+            context.refresh();
+            ReactiveRedisOperationTemplate wrapped = configuration.reactiveRedisOperationTemplate(
+                    configured, context.getBeanProvider(JsonMapperBuilderCustomizer.class));
+            assertThat(wrapped.getString(valueKey).block()).isEqualTo("ready");
+            assertThat(wrapped.hGetString(hashKey, "status").block()).isEqualTo("ready");
+        }
+    }
+
+    @Test
+    void luaInventoryCountersEnforceStockAndUpdateActualRedisValues() {
+        String syncKey = key("lua-stock-sync");
+        assertThat(sync.luaIncr(syncKey, 2L)).isEqualTo(-3L);
+        sync.set(syncKey, "10");
+        assertThat(sync.luaIncr(syncKey, 2L)).isEqualTo(12L);
+        assertThat(sync.luaDecr(syncKey, 3L)).isEqualTo(9L);
+        assertThat(sync.luaDecr(syncKey, 20L)).isEqualTo(-2L);
+        assertThat(sync.luaDiv(syncKey, 3L)).isEqualTo(3L);
+        assertThat(sync.getLong(syncKey)).isEqualTo(9L);
+
+        String reactiveKey = key("lua-stock-reactive");
+        assertThat(reactive.luaIncr(reactiveKey, 2L).block()).isEqualTo(-3L);
+        reactive.set(reactiveKey, "10").block();
+        assertThat(reactive.luaIncr(reactiveKey, 2L).block()).isEqualTo(12L);
+        assertThat(reactive.luaDecr(reactiveKey, 3L).block()).isEqualTo(9L);
+        assertThat(reactive.luaDecr(reactiveKey, 20L).block()).isEqualTo(-2L);
+        assertThat(reactive.getLong(reactiveKey).block()).isEqualTo(9L);
+    }
+
+    @Test
+    void luaHashInventoryCountersUpdateOnlyTheRequestedField() {
+        String syncKey = key("lua-hash-sync");
+        assertThat(sync.luaHincr(syncKey, "stock", 2L)).isEqualTo(-3L);
+        sync.hSet(syncKey, "stock", "10");
+        sync.hSet(syncKey, "other", "99");
+        assertThat(sync.luaHincr(syncKey, "stock", 2L)).isEqualTo(12L);
+        assertThat(sync.luaHdecr(syncKey, "stock", 3L)).isEqualTo(9L);
+        assertThat(sync.luaHdiv(syncKey, "stock", 3L)).isEqualTo(3L);
+        assertThat(sync.hGetLong(syncKey, "stock")).isEqualTo(9L);
+        assertThat(sync.hGetLong(syncKey, "other")).isEqualTo(99L);
+
+        String reactiveKey = key("lua-hash-reactive");
+        assertThat(reactive.luaHincr(reactiveKey, "stock", 2L).block()).isEqualTo(-3L);
+        reactive.hSet(reactiveKey, "stock", "10").block();
+        reactive.hSet(reactiveKey, "other", "99").block();
+        assertThat(reactive.luaHincr(reactiveKey, "stock", 2L).block()).isEqualTo(12L);
+        assertThat(reactive.luaHdecr(reactiveKey, "stock", 3L).block()).isEqualTo(9L);
+        assertThat(reactive.hGetLong(reactiveKey, "stock").block()).isEqualTo(9L);
+        assertThat(reactive.hGetLong(reactiveKey, "other").block()).isEqualTo(99L);
+    }
+
+    @Test
+    void luaDecimalCountersPreserveFractionalStoredValues() {
+        String syncValue = key("lua-decimal-sync");
+        sync.set(syncValue, "10.5");
+        assertThat(sync.luaIncr(syncValue, 1.25)).isEqualTo(11.75);
+        assertThat(sync.luaDecr(syncValue, 0.5)).isEqualTo(11.25);
+        assertThat(sync.getDouble(syncValue)).isEqualTo(11.25);
+        String syncHash = key("lua-decimal-hash-sync");
+        sync.hSet(syncHash, "stock", "10.5");
+        assertThat(sync.luaHincr(syncHash, "stock", 1.25)).isEqualTo(11.75);
+        assertThat(sync.luaHdecr(syncHash, "stock", 0.5)).isEqualTo(11.25);
+        assertThat(sync.hGetDouble(syncHash, "stock")).isEqualTo(11.25);
+
+        String reactiveValue = key("lua-decimal-reactive");
+        reactive.set(reactiveValue, "10.5").block();
+        assertThat(reactive.luaIncr(reactiveValue, 1.25).block()).isEqualTo(11.75);
+        assertThat(reactive.luaDecr(reactiveValue, 0.5).block()).isEqualTo(11.25);
+        assertThat(reactive.getDouble(reactiveValue).block()).isEqualTo(11.25);
+        String reactiveHash = key("lua-decimal-hash-reactive");
+        reactive.hSet(reactiveHash, "stock", "10.5").block();
+        assertThat(reactive.luaHincr(reactiveHash, "stock", 1.25).block()).isEqualTo(11.75);
+        assertThat(reactive.luaHdecr(reactiveHash, "stock", 0.5).block()).isEqualTo(11.25);
+        assertThat(reactive.hGetDouble(reactiveHash, "stock").block()).isEqualTo(11.25);
+    }
+
+    @Test
+    void sortedSetTupleBatchesAndTimedWritesPreserveScores() {
+        Set<ZSetOperations.TypedTuple<Object>> first = Set.of(
+                new DefaultTypedTuple<>("low", 1.0), new DefaultTypedTuple<>("high", 3.0));
+        String syncSeconds = key("zset-tuples-seconds");
+        assertThat(sync.zAdd(syncSeconds, first, 30L)).isEqualTo(2L);
+        assertThat(sync.zRange(syncSeconds, 0, -1)).containsExactly("low", "high");
+        assertThat(sync.zScore(syncSeconds, "high")).isEqualTo(3.0);
+        assertThat(sync.getExpire(syncSeconds)).isBetween(1L, 30L);
+
+        String syncDuration = key("zset-tuples-duration");
+        assertThat(sync.zAdd(syncDuration, first, Duration.ofSeconds(30))).isEqualTo(2L);
+        assertThat(sync.zRange(syncDuration, 0, -1)).containsExactly("low", "high");
+        assertThat(sync.zScore(syncDuration, "low")).isEqualTo(1.0);
+        assertThat(sync.getExpire(syncDuration)).isBetween(1L, 30L);
+
+        String reactiveKey = key("zset-tuples-reactive");
+        assertThat(reactive.zAdd(reactiveKey, first).block()).isEqualTo(2L);
+        assertThat(reactive.zRange(reactiveKey, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("low", "high");
+        assertThat(reactive.zScore(reactiveKey, "high").block()).isEqualTo(3.0);
+        assertThat(reactive.zRevRank(reactiveKey, "high").block()).isZero();
+        assertThat(reactive.zRem(reactiveKey, "low").block()).isEqualTo(1L);
+        assertThat(reactive.zRange(reactiveKey, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("high");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void configuredSynchronousTemplatesRoundTripActualRedisValues() {
+        RedisCachingConfiguration configuration = new RedisCachingConfiguration();
+        ObjectProvider<RedisConnectionFactory> factories = mock(ObjectProvider.class);
+        when(factories.getIfAvailable()).thenReturn(connection);
+        Jackson2JsonRedisSerializer<Object> json = new Jackson2JsonRedisSerializer<>(
+                new ObjectMapper(), Object.class);
+        ObjectProvider<Jackson2JsonRedisSerializer<Object>> serializers = mock(ObjectProvider.class);
+        when(serializers.getIfAvailable()).thenReturn(json);
+        ObjectProvider<JsonMapperBuilderCustomizer> customizers = mock(ObjectProvider.class);
+        when(customizers.orderedStream()).thenReturn(Stream.empty());
+
+        RedisTemplate<String, Object> configured = configuration.redisTemplate(factories, serializers);
+        String valueKey = key("configured-sync-value");
+        configured.opsForValue().set(valueKey, "ready");
+        assertThat(configured.opsForValue().get(valueKey)).isEqualTo("ready");
+        RedisOperationTemplate wrapped = configuration.redisOperationTemplate(configured, customizers);
+        assertThat(wrapped.getString(valueKey)).isEqualTo("ready");
+        assertThat(configuration.geoTemplate(configured)).isNotNull();
+
+        StringRedisTemplate strings = configuration.stringRedisTemplate(factories);
+        strings.afterPropertiesSet();
+        String plainKey = key("configured-string-value");
+        strings.opsForValue().set(plainKey, "plain");
+        assertThat(strings.opsForValue().get(plainKey)).isEqualTo("plain");
+    }
+
+    @Test
+    void sortedSetTypedScoreAndReverseRangesPreserveOrder() {
+        String key = key("zset-range-typed");
+        assertThat(sync.zAdd(key, "1", 10.0)).isTrue();
+        assertThat(sync.zAdd(key, "2", 20.0)).isTrue();
+        assertThat(sync.zAdd(key, "3", 30.0)).isTrue();
+        assertThat(sync.zRangeInteger(key, 0, -1)).containsExactly(1, 2, 3);
+        assertThat(sync.zRevrangeInteger(key, 0, -1)).containsExactly(3, 2, 1);
+        assertThat(sync.zRangeStringByScore(key, 15.0, 30.0)).containsExactly("2", "3");
+        assertThat(sync.zRevrangeStringByScore(key, 15.0, 30.0)).containsExactly("3", "2");
+        assertThat(sync.zRangeWithScores(key, 0, -1))
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(10.0, 20.0, 30.0);
+        assertThat(sync.zRevrangeWithScores(key, 0, -1))
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0, 10.0);
+        assertThat(sync.zRevrangeByScoreWithScores(key, 15.0, 30.0))
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0);
+
+        Range<Long> positions = Range.closed(0L, 2L);
+        Range<Double> scores = Range.closed(15.0, 30.0);
+        assertThat(reactive.zRangeInteger(key, positions).collectList().block()).containsExactly(1, 2, 3);
+        assertThat(reactive.zRevrangeInteger(key, positions).collectList().block()).containsExactly(3, 2, 1);
+        assertThat(reactive.zRangeStringByScore(key, scores).collectList().block())
+                .containsExactly("2", "3");
+        assertThat(reactive.zRevrangeStringByScore(key, scores).collectList().block())
+                .containsExactly("3", "2");
+        assertThat(reactive.zRangeWithScores(key, positions).collectList().block())
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(10.0, 20.0, 30.0);
+        assertThat(reactive.zRevrangeWithScores(key, positions).collectList().block())
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0, 10.0);
+        assertThat(reactive.zRevrangeByScoreWithScores(key, scores).collectList().block())
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0);
+    }
+
+    @Test
+    void sortedSetUnionAndIntersectionApplyWeightsAndAggregation() {
+        String left = key("zset-weight-left");
+        String right = key("zset-weight-right");
+        sync.zAdd(left, "a", 1.0);
+        sync.zAdd(left, "b", 2.0);
+        sync.zAdd(right, "b", 3.0);
+        sync.zAdd(right, "c", 4.0);
+
+        String syncMin = key("zset-union-min");
+        assertThat(sync.zUnionAndStore(left, List.of(right), syncMin, Aggregate.MIN)).isEqualTo(3L);
+        assertThat(sync.zScore(syncMin, "b")).isEqualTo(2.0);
+        String syncWeighted = key("zset-union-weighted");
+        assertThat(sync.zUnionAndStore(left, List.of(right), syncWeighted,
+                Aggregate.SUM, Weights.of(2, 3))).isEqualTo(3L);
+        assertThat(sync.zScore(syncWeighted, "a")).isEqualTo(2.0);
+        assertThat(sync.zScore(syncWeighted, "b")).isEqualTo(13.0);
+        assertThat(sync.zScore(syncWeighted, "c")).isEqualTo(12.0);
+        String syncIntersection = key("zset-intersection-max");
+        assertThat(sync.zIntersectAndStore(left, List.of(right), syncIntersection, Aggregate.MAX))
+                .isEqualTo(1L);
+        assertThat(sync.zScore(syncIntersection, "b")).isEqualTo(3.0);
+
+        String reactiveMax = key("zset-union-reactive-max");
+        assertThat(reactive.zUnionAndStore(left, List.of(right), reactiveMax, Aggregate.MAX).block())
+                .isEqualTo(3L);
+        assertThat(reactive.zScore(reactiveMax, "b").block()).isEqualTo(3.0);
+        String reactiveWeighted = key("zset-union-reactive-weighted");
+        assertThat(reactive.zUnionAndStore(left, List.of(right), reactiveWeighted,
+                Aggregate.SUM, Weights.of(2, 3)).block()).isEqualTo(3L);
+        assertThat(reactive.zScore(reactiveWeighted, "b").block()).isEqualTo(13.0);
+        String reactiveIntersection = key("zset-intersection-reactive-min");
+        assertThat(reactive.zIntersectAndStore(left, List.of(right), reactiveIntersection,
+                Aggregate.MIN).block()).isEqualTo(1L);
+        assertThat(reactive.zScore(reactiveIntersection, "b").block()).isEqualTo(2.0);
+    }
+
+    @Test
+    void setIfAbsentTimeoutOverloadsDoNotOverwriteExistingValues() {
+        String syncMillis = key("nx-sync-millis");
+        assertThat(sync.setNx(syncMillis, "first", 30_000L)).isTrue();
+        assertThat(sync.setNx(syncMillis, "second", 30_000L)).isFalse();
+        assertThat(sync.getString(syncMillis)).isEqualTo("first");
+        assertThat(sync.getExpire(syncMillis)).isBetween(1L, 30L);
+
+        String syncUnit = key("nx-sync-unit");
+        assertThat(sync.setNx(syncUnit, "first", 30L, TimeUnit.SECONDS)).isTrue();
+        assertThat(sync.setNx(syncUnit, "second", 30L, TimeUnit.SECONDS)).isFalse();
+        assertThat(sync.getString(syncUnit)).isEqualTo("first");
+        assertThat(sync.getExpire(syncUnit)).isBetween(1L, 30L);
+
+        String syncDuration = key("nx-sync-duration");
+        assertThat(sync.setNx(syncDuration, "first", Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.setNx(syncDuration, "second", Duration.ofSeconds(30))).isFalse();
+        assertThat(sync.getString(syncDuration)).isEqualTo("first");
+        assertThat(sync.getExpire(syncDuration)).isBetween(1L, 30L);
+
+        String reactiveMillis = key("nx-reactive-millis");
+        assertThat(reactive.setNx(reactiveMillis, "first", 30_000L).block()).isTrue();
+        assertThat(reactive.setNx(reactiveMillis, "second", 30_000L).block()).isFalse();
+        assertThat(reactive.getString(reactiveMillis).block()).isEqualTo("first");
+        assertTimed(reactiveMillis);
+
+        String reactiveDuration = key("nx-reactive-duration");
+        assertThat(reactive.setNx(reactiveDuration, "first", Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.setNx(reactiveDuration, "second", Duration.ofSeconds(30)).block()).isFalse();
+        assertThat(reactive.getString(reactiveDuration).block()).isEqualTo("first");
+        assertTimed(reactiveDuration);
+    }
+
+    @Test
+    void valueBatchReadsResolvePatternsPrefixesAndTypedNumbers() {
+        String prefix = key("value-batch-prefix");
+        String first = RedisKey.getKeyStr(prefix, "one");
+        String second = RedisKey.getKeyStr(prefix, "two");
+        sync.set(first, "11");
+        sync.set(second, "22");
+        assertThat(sync.mGet(List.<Object>of("one", "two"), prefix)).containsExactly("11", "22");
+        assertThat(reactive.mGet(List.<Object>of("one", "two"), prefix).block())
+                .containsExactly("11", "22");
+        String pattern = RedisKey.getKeyStr(prefix) + ":*";
+        assertThat(sync.mGet(pattern)).containsExactlyInAnyOrder("11", "22");
+        assertThat(reactive.mGet(pattern).block()).containsExactlyInAnyOrder("11", "22");
+        assertThat(sync.mGetInteger(List.of(first, second))).containsExactly(11, 22);
+        assertThat(reactive.mGetInteger(List.of(first, second)).block()).containsExactly(11, 22);
+        assertThat(sync.mGetFor(List.of(first, second), value -> Integer.parseInt((String) value) + 1))
+                .containsExactly(12, 23);
+        assertThat(reactive.mGetFor(List.of(first, second), value -> Integer.parseInt((String) value) + 1).block())
+                .containsExactly(12, 23);
+        assertThat(sync.mGet(List.of())).isEmpty();
+        assertThat(reactive.mGet(List.of()).block()).isNull();
+    }
+
+    @Test
+    void hashWholeMapConversionsPreserveNumericKeysAndValues() {
+        String hash = key("hash-map-conversions");
+        assertThat(sync.hmSet(hash, Map.of("1", "10", "2", "20"))).isTrue();
+        assertThat(sync.hmGetForString(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of("1", "10", "2", "20"));
+        assertThat(sync.hmGetForInteger(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1, 10, 2, 20));
+        assertThat(sync.hmGetForLong(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1L, 10L, 2L, 20L));
+        assertThat(sync.hmGetForDouble(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1.0, 10.0, 2.0, 20.0));
+        assertThat(sync.hmGetForString(hash, Long.class)).containsExactlyInAnyOrderEntriesOf(
+                Map.of("1", 10L, "2", 20L));
+        assertThat(sync.hmGetForString(hash, new TypeReference<Long>() {}))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("1", 10L, "2", 20L));
+        assertThat(sync.hmGetFor(hash, value -> Integer.parseInt((String) value), Long.class))
+                .containsExactlyInAnyOrderEntriesOf(Map.of(1, 10L, 2, 20L));
+        assertThat(sync.hmGetFor(hash, value -> Integer.parseInt((String) value),
+                new TypeReference<Long>() {})).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1, 10L, 2, 20L));
+        assertThat(sync.hmGet(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of("1", "10", "2", "20"));
+    }
+}

@@ -121,6 +121,14 @@ public class ReactiveRedisOperationTemplate {
 		return Flux.error(new RedisOperationException(e.getMessage()));
 	}
 
+	private <T> Mono<T> expireAfter(Mono<T> operation, String key, long seconds) {
+		return seconds > 0 ? operation.flatMap(value -> expire(key, seconds).thenReturn(value)) : operation;
+	}
+
+	private <T> Mono<T> expireAfter(Mono<T> operation, String key, Duration timeout) {
+		return !timeout.isNegative() ? operation.flatMap(value -> expire(key, timeout).thenReturn(value)) : operation;
+	}
+
 	// =============================Serializer============================
 
     /**
@@ -627,11 +635,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getValueOperations().increment(key, delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -650,11 +654,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getValueOperations().increment(key, delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -692,11 +692,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Double> increment = getValueOperations().increment(key, delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -715,11 +711,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Double> increment = getValueOperations().increment(key, delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -757,11 +749,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getValueOperations().increment(key, -delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -780,11 +768,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getValueOperations().increment(key, -delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -822,11 +806,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Double> increment = getValueOperations().increment(key, -delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -845,11 +825,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Double> increment = getValueOperations().increment(key, -delta);
-			return increment.doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1000,11 +976,7 @@ public class ReactiveRedisOperationTemplate {
 			return lLeftPushAll(key, (Collection) value, seconds);
 		}
 		try {
-			return getListOperations().leftPush(key, value).doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return getListOperations().leftPush(key, value).transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1015,11 +987,7 @@ public class ReactiveRedisOperationTemplate {
 			return lLeftPushAll(key, (Collection) value, timeout);
 		}
 		try {
-			return getListOperations().leftPush(key, value).doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return getListOperations().leftPush(key, value).transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1035,11 +1003,7 @@ public class ReactiveRedisOperationTemplate {
 
 	public <V> Mono<Long> lLeftPushAll(String key, Collection<V> values, long seconds) {
 		try {
-			return getListOperations().leftPushAll(key, values.toArray()).doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return getListOperations().leftPushAll(key, values.toArray()).transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1047,11 +1011,7 @@ public class ReactiveRedisOperationTemplate {
 
 	public <V> Mono<Long> lLeftPushAll(String key, Collection<V> values, Duration timeout) {
 		try {
-			return getListOperations().leftPushAll(key, values.toArray()).doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return getListOperations().leftPushAll(key, values.toArray()).transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1066,11 +1026,7 @@ public class ReactiveRedisOperationTemplate {
 			return lLeftPushxAll(key, (Collection) value, seconds);
 		}
 		try {
-			return getListOperations().leftPushIfPresent(key, value).doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return getListOperations().leftPushIfPresent(key, value).transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1081,11 +1037,7 @@ public class ReactiveRedisOperationTemplate {
 			return lLeftPushxAll(key, (Collection) value, timeout);
 		}
 		try {
-			return getListOperations().leftPushIfPresent(key, value).doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return getListOperations().leftPushIfPresent(key, value).transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1095,11 +1047,7 @@ public class ReactiveRedisOperationTemplate {
 		try {
 			return Flux.fromIterable(values).flatMap(value -> {
 				return getListOperations().leftPushIfPresent(key, value);
-			}).count().doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			}).count().transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1109,11 +1057,7 @@ public class ReactiveRedisOperationTemplate {
 		try {
 			return Flux.fromIterable(values).flatMap(value -> {
 				return getListOperations().leftPushIfPresent(key, value);
-			}).count().doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			}).count().transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1167,12 +1111,17 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public Flux<Object> lLeftPop(String key, Integer count) {
 		try {
+			if (count <= 0) {
+				return Flux.empty();
+			}
 			return reactiveRedisTemplate.createFlux((ReactiveRedisConnection connection) -> {
 				ByteBuffer rawKey = getRawKey(key);
 				ReactiveListCommands listCommands = connection.listCommands();
 				return listCommands.lRange(rawKey, 0, count - 1)
-						.doOnNext(rawValue -> listCommands.lTrim(rawKey, count, -1))
-						.map(rawValue -> getDeserializeValue(rawValue));
+						.collectList()
+						.flatMapMany(rawValues -> listCommands.lTrim(rawKey, count, -1)
+								.thenMany(Flux.fromIterable(rawValues)))
+						.map(this::getDeserializeValue);
 			});
 		} catch (Exception e) {
 			return fluxError(e);
@@ -1228,11 +1177,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> rt = getListOperations().rightPush(key, value);
-			return rt.doOnSuccess(c -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1244,11 +1189,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> rt = getListOperations().rightPush(key, value);
-			return rt.doOnSuccess(c -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1265,11 +1206,7 @@ public class ReactiveRedisOperationTemplate {
 	public <V> Mono<Long> lRightPushAll(String key, Collection<V> values, long seconds) {
 		try {
 			Mono<Long> rt = getListOperations().rightPushAll(key, values.toArray());
-			return rt.doOnSuccess(c -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1278,11 +1215,7 @@ public class ReactiveRedisOperationTemplate {
 	public <V> Mono<Long> lRightPushAll(String key, Collection<V> values, Duration timeout) {
 		try {
 			Mono<Long> rt = getListOperations().rightPushAll(key, values.toArray());
-			return rt.doOnSuccess(c -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1313,11 +1246,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> rt = getListOperations().rightPushIfPresent(key, value);
-			return rt.doOnSuccess(c -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1329,11 +1258,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> rt = getListOperations().rightPushIfPresent(key, value);
-			return rt.doOnSuccess(c -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1341,13 +1266,12 @@ public class ReactiveRedisOperationTemplate {
 
 	public <V> Mono<Long> lRightPushxAll(String key, Collection<V> values, long seconds) {
 		try {
-			return Flux.fromIterable(values).flatMap(value -> {
+			if (values.isEmpty()) {
+				return Mono.just(0L);
+			}
+			return Flux.fromIterable(values).concatMap(value -> {
 				return getListOperations().rightPushIfPresent(key, value);
-			}).next().doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			}).count().transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1355,13 +1279,12 @@ public class ReactiveRedisOperationTemplate {
 
 	public <V> Mono<Long> lRightPushxAll(String key, Collection<V> values, Duration timeout) {
 		try {
-			return Flux.fromIterable(values).flatMap(value -> {
+			if (values.isEmpty()) {
+				return Mono.just(0L);
+			}
+			return Flux.fromIterable(values).concatMap(value -> {
 				return getListOperations().rightPushIfPresent(key, value);
-			}).next().doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			}).count().transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1417,12 +1340,17 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public Flux<Object> lRightPop(String key, Integer count) {
 		try {
+			if (count <= 0) {
+				return Flux.empty();
+			}
 			return reactiveRedisTemplate.createFlux((ReactiveRedisConnection connection) -> {
 				ByteBuffer rawKey = getRawKey(key);
 				ReactiveListCommands listCommands = connection.listCommands();
-				return listCommands.lRange(rawKey, -(count - 1), -1)
-						.map(rawValue -> getDeserializeValue(rawValue))
-						.doOnNext(rawValue -> listCommands.lTrim(rawKey, 0, -(count - 1)));
+				return listCommands.lRange(rawKey, -count, -1)
+						.collectList()
+						.flatMapMany(rawValues -> listCommands.lTrim(rawKey, 0, -count - 1)
+								.thenMany(Flux.fromIterable(rawValues)))
+						.map(this::getDeserializeValue);
 			});
 		} catch (Exception e) {
 			return fluxError(e);
@@ -1963,9 +1891,9 @@ public class ReactiveRedisOperationTemplate {
 			return Mono.just(false);
 		}
 		try {
-			return Flux.fromIterable(hashKeys).flatMap(hashKey -> {
-				return getHashOperations().put(key, hashKeys, value);
-			}).all(rt -> rt == true);
+			return Flux.fromIterable(hashKeys)
+					.concatMap(hashKey -> getHashOperations().put(key, hashKey, value))
+					.then(Mono.just(true));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1996,11 +1924,7 @@ public class ReactiveRedisOperationTemplate {
 	 */
 	public Mono<Boolean> hmSet(String key, Map<Object, Object> map, long seconds) {
 		try {
-			return getHashOperations().putAll(key, map).doOnSuccess(nvalue -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return getHashOperations().putAll(key, map).transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2015,11 +1939,7 @@ public class ReactiveRedisOperationTemplate {
      */
 	public Mono<Boolean> hmSet(String key, Map<Object, Object> map, Duration timeout) {
 		try {
-			return getHashOperations().putAll(key, map).doOnSuccess(nvalue -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return getHashOperations().putAll(key, map).transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2076,11 +1996,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Boolean> hSet(String key, Object hashKey, Object value, long seconds) {
 		try {
 			Mono<Boolean> rt = getHashOperations().put(key, hashKey, value);
-			return rt.doOnSuccess(nvalue -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2097,11 +2013,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Boolean> hSet(String key, Object hashKey, Object value, Duration timeout) {
 		try {
 			Mono<Boolean> rt = getHashOperations().put(key, hashKey, value);
-			return rt.doOnSuccess(nvalue -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2170,11 +2082,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getHashOperations().increment(key, hashKey, delta);
-			return increment.doOnSuccess(value -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2194,11 +2102,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getHashOperations().increment(key, hashKey, delta);
-			return increment.doOnSuccess(value -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2238,11 +2142,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getHashOperations().increment(key, hashKey, delta);
-			return increment.doOnSuccess(value -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2262,11 +2162,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Long> increment = getHashOperations().increment(key, hashKey, delta);
-			return increment.doOnSuccess(value -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2305,11 +2201,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Double> increment = getHashOperations().increment(key, hashKey, delta);
-			return increment.doOnSuccess(value -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2329,11 +2221,7 @@ public class ReactiveRedisOperationTemplate {
 		}
 		try {
 			Mono<Double> increment = getHashOperations().increment(key, hashKey, delta);
-			return increment.doOnSuccess(value -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return increment.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2387,11 +2275,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Long> sAddAndExpire(String key, long seconds, Object... values) {
 		try {
 			Mono<Long> rt = getSetOperations().add(key, values);
-			return rt.doOnSuccess(value -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2407,11 +2291,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Long> sAddAndExpire(String key, Duration timeout, Object... values) {
 		try {
 			Mono<Long> rt = getSetOperations().add(key, values);
-			return rt.doOnSuccess(value -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2753,11 +2633,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Long> sSetAndTime(String key, long seconds, Object... values) {
 		try {
 			Mono<Long> rt = getSetOperations().add(key, values);
-			return rt.doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -2988,11 +2864,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Double> zIncr(String key, Object value, double delta, long seconds) {
 		try {
 			Mono<Double> rt = getZSetOperations().incrementScore(key, value, delta);
-			return rt.doOnSuccess(newDelta -> {
-				if (seconds > 0) {
-					expire(key, seconds);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3009,11 +2881,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Double> zIncr(String key, Object value, double delta, Duration timeout) {
 		try {
 			Mono<Double> rt = getZSetOperations().incrementScore(key, value, delta);
-			return rt.doOnSuccess(newDelta -> {
-				if (!timeout.isNegative()) {
-					expire(key, timeout);
-				}
-			});
+			return rt.transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3893,7 +3761,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Long> luaIncr(String key, long delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(INCR_SCRIPT, Lists.newArrayList(key), delta);
+			return this.executeLuaScript(INCR_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3911,7 +3779,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Double> luaIncr(String key, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			Mono<Object> rst = this.executeLuaScript(INCR_BYFLOAT_SCRIPT, Lists.newArrayList(key), delta);
+			Mono<Object> rst = this.executeLuaScript(INCR_BYFLOAT_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
 			return rst.map(TO_DOUBLE);
 		} catch (Exception e) {
 			return monoError(e);
@@ -3932,7 +3800,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Long> luaDecr(String key, long delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			return this.executeLuaScript(DECR_SCRIPT, Lists.newArrayList(key), delta);
+			return this.executeLuaScript(DECR_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -3952,7 +3820,7 @@ public class ReactiveRedisOperationTemplate {
 	public Mono<Double> luaDecr(String key, double delta) {
 		Assert.hasLength(key, "key must not be empty");
 		try {
-			Mono<Object> rst = this.executeLuaScript(DECR_BYFLOAT_SCRIPT, Lists.newArrayList(key), delta);
+			Mono<Object> rst = this.executeLuaScript(DECR_BYFLOAT_SCRIPT, Lists.newArrayList(key), String.valueOf(delta));
 			return rst.map(TO_DOUBLE);
 		} catch (Exception e) {
 			return monoError(e);
@@ -3973,12 +3841,7 @@ public class ReactiveRedisOperationTemplate {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 
-			SerializationPair<Long> serializationPair = reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair();
-
-			Flux<Long> rst = reactiveRedisTemplate.execute(HINCR_SCRIPT, Lists.newArrayList(key, hashKey),
-					Arrays.asList(delta), serializationPair.getWriter(), serializationPair.getReader());
-
-			return rst.last().map(TO_LONG);
+			return this.executeLuaScript(HINCR_SCRIPT, Lists.newArrayList(key, hashKey), String.valueOf(delta));
 
 		} catch (Exception e) {
 			return monoError(e);
@@ -4002,7 +3865,7 @@ public class ReactiveRedisOperationTemplate {
 			SerializationPair<Object> serializationPair = reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair();
 
 			Flux<Object> rst = reactiveRedisTemplate.execute(HINCR_BYFLOAT_SCRIPT, Lists.newArrayList(key, hashKey),
-					Arrays.asList(delta), serializationPair.getWriter(),
+					Arrays.asList(String.valueOf(delta)), serializationPair.getWriter(),
 					serializationPair.getReader());
 			;
 
@@ -4028,12 +3891,7 @@ public class ReactiveRedisOperationTemplate {
 		Assert.hasLength(key, "key must not be empty");
 		try {
 
-			SerializationPair<Long> serializationPair = reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair();
-
-			Flux<Long> rst = reactiveRedisTemplate.execute(HDECR_SCRIPT, Lists.newArrayList(key, hashKey),
-					Arrays.asList(delta), serializationPair.getWriter(), serializationPair.getReader());
-
-			return rst.last().map(TO_LONG);
+			return this.executeLuaScript(HDECR_SCRIPT, Lists.newArrayList(key, hashKey), String.valueOf(delta));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -4058,7 +3916,7 @@ public class ReactiveRedisOperationTemplate {
 			SerializationPair<Object> serializationPair = reactiveRedisTemplate.getSerializationContext().getHashValueSerializationPair();
 
 			Flux<Object> rst = reactiveRedisTemplate.execute(HDECR_BYFLOAT_SCRIPT, Lists.newArrayList(key, hashKey),
-					Arrays.asList(delta), serializationPair.getWriter(),
+					Arrays.asList(String.valueOf(delta)), serializationPair.getWriter(),
 					serializationPair.getReader());
 			;
 
@@ -4195,3 +4053,4 @@ public class ReactiveRedisOperationTemplate {
 	}
 
 }
+
