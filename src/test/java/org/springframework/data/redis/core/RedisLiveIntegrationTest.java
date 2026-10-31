@@ -1762,4 +1762,67 @@ class RedisLiveIntegrationTest {
             sync.del(stringKey, jsonKey);
         }
     }
+
+    @Test
+    void synchronousSetAlgebraStoresTheComputedMembers() {
+        String a = key("set-a"), b = key("set-b"), c = key("set-c");
+        sync.sAdd(a, "a", "b");
+        sync.sAdd(b, "b", "c");
+        sync.sAdd(c, "b", "d");
+        assertThat(sync.sDiff(a, b)).containsExactly("a");
+        assertThat(sync.sIntersect(a, b)).containsExactly("b");
+        assertThat(sync.sIntersect(a, List.of(b, c))).containsExactly("b");
+        assertThat(sync.sIntersect(List.of(a, b, c))).containsExactly("b");
+        assertThat(sync.sUnion(a, b)).containsExactlyInAnyOrder("a", "b", "c");
+        assertThat(sync.sUnion(a, List.of(b, c))).containsExactlyInAnyOrder("a", "b", "c", "d");
+        assertThat(sync.sUnion(List.of(a, b, c))).containsExactlyInAnyOrder("a", "b", "c", "d");
+
+        String diff = key("set-diff"), intersection = key("set-intersection"), union = key("set-union");
+        assertThat(sync.sDiffAndStore(a, b, diff)).isEqualTo(1L);
+        assertThat(sync.sGet(diff)).containsExactly("a");
+        assertThat(sync.sDiffAndStore(a, List.of(b, c), diff)).isEqualTo(1L);
+        assertThat(sync.sDiffAndStore(List.of(a, b, c), diff)).isEqualTo(1L);
+        assertThat(sync.sGet(diff)).containsExactly("a");
+        assertThat(sync.sIntersectAndStore(a, b, intersection)).isEqualTo(1L);
+        assertThat(sync.sIntersectAndStore(a, List.of(b, c), intersection)).isEqualTo(1L);
+        assertThat(sync.sIntersectAndStore(List.of(a, b, c), intersection)).isEqualTo(1L);
+        assertThat(sync.sGet(intersection)).containsExactly("b");
+        assertThat(sync.sUnionAndStore(a, b, union)).isEqualTo(3L);
+        assertThat(sync.sUnionAndStore(a, List.of(b, c), union)).isEqualTo(4L);
+        assertThat(sync.sUnionAndStore(List.of(a, b, c), union)).isEqualTo(4L);
+        assertThat(sync.sGet(union)).containsExactlyInAnyOrder("a", "b", "c", "d");
+    }
+
+    @Test
+    void reactiveSetAlgebraStoresTheComputedMembers() {
+        String a = key("reactive-set-a"), b = key("reactive-set-b"), c = key("reactive-set-c");
+        reactive.sAdd(a, "a", "b").block();
+        reactive.sAdd(b, "b", "c").block();
+        reactive.sAdd(c, "b", "d").block();
+        assertThat(reactive.sDiff(a, b).collectList().block()).containsExactly("a");
+        assertThat(reactive.sIntersect(a, b).collectList().block()).containsExactly("b");
+        assertThat(reactive.sIntersect(a, List.of(b, c)).collectList().block()).containsExactly("b");
+        assertThat(reactive.sIntersect(List.of(a, b, c)).collectList().block()).containsExactly("b");
+        assertThat(reactive.sUnion(a, b).collectList().block()).containsExactlyInAnyOrder("a", "b", "c");
+        assertThat(reactive.sUnion(a, List.of(b, c)).collectList().block())
+                .containsExactlyInAnyOrder("a", "b", "c", "d");
+        assertThat(reactive.sUnion(List.of(a, b, c)).collectList().block())
+                .containsExactlyInAnyOrder("a", "b", "c", "d");
+
+        String diff = key("reactive-set-diff"), intersection = key("reactive-set-intersection");
+        String union = key("reactive-set-union");
+        assertThat(reactive.sDiffAndStore(a, b, diff).block()).isEqualTo(1L);
+        assertThat(reactive.sGet(diff).collectList().block()).containsExactly("a");
+        assertThat(reactive.sDiffAndStore(a, List.of(b, c), diff).block()).isEqualTo(1L);
+        assertThat(reactive.sDiffAndStore(List.of(a, b, c), diff).block()).isEqualTo(1L);
+        assertThat(reactive.sGet(diff).collectList().block()).containsExactly("a");
+        assertThat(reactive.sIntersectAndStore(a, b, intersection).block()).isEqualTo(1L);
+        assertThat(reactive.sIntersectAndStore(a, List.of(b, c), intersection).block()).isEqualTo(1L);
+        assertThat(reactive.sIntersectAndStore(List.of(a, b, c), intersection).block()).isEqualTo(1L);
+        assertThat(reactive.sGet(intersection).collectList().block()).containsExactly("b");
+        assertThat(reactive.sUnionAndStore(a, b, union).block()).isEqualTo(3L);
+        assertThat(reactive.sUnionAndStore(a, List.of(b, c), union).block()).isEqualTo(4L);
+        assertThat(reactive.sUnionAndStore(List.of(a, b, c), union).block()).isEqualTo(4L);
+        assertThat(reactive.sGet(union).collectList().block()).containsExactlyInAnyOrder("a", "b", "c", "d");
+    }
 }
