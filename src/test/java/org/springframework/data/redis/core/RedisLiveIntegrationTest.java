@@ -1825,4 +1825,48 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.sUnionAndStore(List.of(a, b, c), union).block()).isEqualTo(4L);
         assertThat(reactive.sGet(union).collectList().block()).containsExactlyInAnyOrder("a", "b", "c", "d");
     }
+
+    @Test
+    void synchronousSortedSetAlgebraPreservesAggregatedScores() {
+        String a = key("z-a"), b = key("z-b"), union = key("z-union"), intersection = key("z-intersection");
+        sync.zAdd(a, "a", 1.0);
+        sync.zAdd(a, "b", 2.0);
+        sync.zAdd(b, "b", 3.0);
+        sync.zAdd(b, "c", 4.0);
+        assertThat(sync.zHas(a, "b")).isTrue();
+        assertThat(sync.zHas(a, "c")).isFalse();
+        assertThat(sync.zCount(a, 1.5, 2.5)).isEqualTo(1L);
+        assertThat(sync.zUnionAndStore(a, b, union)).isEqualTo(3L);
+        assertThat(sync.zRangeString(union, 0, -1)).containsExactly("a", "c", "b");
+        assertThat(sync.zScore(union, "b")).isEqualTo(5.0);
+        assertThat(sync.zIntersectAndStore(a, b, intersection)).isEqualTo(1L);
+        assertThat(sync.zRangeString(intersection, 0, -1)).containsExactly("b");
+        assertThat(sync.zScore(intersection, "b")).isEqualTo(5.0);
+        assertThat(sync.zRem(a, "a")).isEqualTo(1L);
+        assertThat(sync.zRemByScore(a, 2.0, 2.0)).isEqualTo(1L);
+        assertThat(sync.zCard(a)).isZero();
+    }
+
+    @Test
+    void reactiveSortedSetAlgebraPreservesAggregatedScores() {
+        String a = key("rz-a"), b = key("rz-b"), union = key("rz-union"), intersection = key("rz-intersection");
+        reactive.zAdd(a, "a", 1.0).block();
+        reactive.zAdd(a, "b", 2.0).block();
+        reactive.zAdd(b, "b", 3.0).block();
+        reactive.zAdd(b, "c", 4.0).block();
+        assertThat(reactive.zHas(a, "b").block()).isTrue();
+        assertThat(reactive.zHas(a, "c").block()).isFalse();
+        assertThat(reactive.zCount(a, Range.closed(1.5, 2.5)).block()).isEqualTo(1L);
+        assertThat(reactive.zUnionAndStore(a, b, union).block()).isEqualTo(3L);
+        assertThat(reactive.zRangeString(union, Range.closed(0L, -1L)).collectList().block())
+                .containsExactly("a", "c", "b");
+        assertThat(reactive.zScore(union, "b").block()).isEqualTo(5.0);
+        assertThat(reactive.zIntersectAndStore(a, b, intersection).block()).isEqualTo(1L);
+        assertThat(reactive.zRangeString(intersection, Range.closed(0L, -1L)).collectList().block())
+                .containsExactly("b");
+        assertThat(reactive.zScore(intersection, "b").block()).isEqualTo(5.0);
+        assertThat(reactive.zRem(a, "a").block()).isEqualTo(1L);
+        assertThat(reactive.zRemByScore(a, Range.closed(2.0, 2.0)).block()).isEqualTo(1L);
+        assertThat(reactive.zCard(a).block()).isZero();
+    }
 }
