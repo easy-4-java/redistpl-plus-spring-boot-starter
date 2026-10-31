@@ -3,6 +3,7 @@ package org.springframework.data.redis.core;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -185,5 +186,44 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.zScore(ranked, "low").block()).isEqualTo(1.0);
         assertThat(reactive.zIncr(ranked, "low", 4.0).block()).isEqualTo(5.0);
         assertThat(reactive.zScore(ranked, "low").block()).isEqualTo(5.0);
+    }
+
+    @Test
+    void synchronousValueVariantsPreserveExpiryAndBatchResults() {
+        String prefix = key("batch");
+        String first = prefix + ":1";
+        String second = prefix + ":2";
+        assertThat(sync.set(first, "11", 30L)).isTrue();
+        assertThat(sync.set(second, "22", Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.getExpire(first)).isBetween(1L, 30L);
+        assertThat(sync.getExpire(second)).isBetween(1L, 30L);
+        assertThat(sync.getLong(first)).isEqualTo(11L);
+        assertThat(sync.getInteger(second)).isEqualTo(22);
+        assertThat(sync.getString(prefix + ":absent", "fallback")).isEqualTo("fallback");
+        assertThat(sync.mGetString(List.of(first, second))).containsExactly("11", "22");
+        assertThat(sync.keys(prefix + ":*")).containsExactlyInAnyOrder(first, second);
+        assertThat(sync.getAndSet(first, "33")).isEqualTo("11");
+        assertThat(sync.getString(first)).isEqualTo("33");
+        assertThat(sync.delPattern(prefix + ":*")).isEqualTo(2L);
+        assertThat(sync.hasKey(first)).isFalse();
+        assertThat(sync.hasKey(second)).isFalse();
+    }
+
+    @Test
+    void reactiveValueVariantsPreserveExpiryAndBatchResults() {
+        String prefix = key("batch-reactive");
+        String first = prefix + ":1";
+        String second = prefix + ":2";
+        assertThat(reactive.set(first, "11", 30L).block()).isTrue();
+        assertThat(reactive.set(second, "22", Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.getExpire(first).block()).isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+        assertThat(reactive.getLong(first).block()).isEqualTo(11L);
+        assertThat(reactive.getInteger(second).block()).isEqualTo(22);
+        assertThat(reactive.mGetString(List.of(first, second)).block()).containsExactly("11", "22");
+        assertThat(reactive.setNx(first, "duplicate", Duration.ofSeconds(30)).block()).isFalse();
+        assertThat(reactive.getString(first).block()).isEqualTo("11");
+        assertThat(reactive.del(first, second).block()).isEqualTo(2L);
+        assertThat(reactive.hasKey(first).block()).isFalse();
+        assertThat(reactive.hasKey(second).block()).isFalse();
     }
 }
