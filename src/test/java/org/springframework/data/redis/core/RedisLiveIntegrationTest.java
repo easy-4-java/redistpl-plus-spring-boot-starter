@@ -2719,4 +2719,161 @@ class RedisLiveIntegrationTest {
                 assertThatThrownBy(() -> command.command().accept(null))
                         .isInstanceOf(RedisOperationException.class)));
     }
+
+    @TestFactory
+    Stream<DynamicTest> synchronousListCommandsRejectNullKeys() {
+        List<InvalidSyncKeyCommand> commands = List.of(
+                new InvalidSyncKeyCommand("range", k -> sync.lRange(k, 0, -1)),
+                new InvalidSyncKeyCommand("index", k -> sync.lIndex(k, 0)),
+                new InvalidSyncKeyCommand("left push distinct", k -> sync.lLeftPushDistinct(k, "a")),
+                new InvalidSyncKeyCommand("left push", k -> sync.lLeftPush(k, "a")),
+                new InvalidSyncKeyCommand("left push seconds", k -> sync.lLeftPush(k, "a", 30L)),
+                new InvalidSyncKeyCommand("left push duration", k -> sync.lLeftPush(k, "a", Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("left push all", k -> sync.lLeftPushAll(k, List.of("a", "b"))),
+                new InvalidSyncKeyCommand("left push all seconds", k -> sync.lLeftPushAll(k, List.of("a"), 30L)),
+                new InvalidSyncKeyCommand("left push all duration", k -> sync.lLeftPushAll(k, List.of("a"), Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("left push if present", k -> sync.lLeftPushx(k, "a")),
+                new InvalidSyncKeyCommand("left push if present seconds", k -> sync.lLeftPushx(k, "a", 30L)),
+                new InvalidSyncKeyCommand("left push if present duration", k -> sync.lLeftPushx(k, "a", Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("left push if present all seconds", k -> sync.lLeftPushxAll(k, List.of("a"), 30L)),
+                new InvalidSyncKeyCommand("left push if present all duration", k -> sync.lLeftPushxAll(k, List.of("a"), Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("left pop", sync::lLeftPop),
+                new InvalidSyncKeyCommand("left pop and remove", sync::lLeftPopAndLrem),
+                new InvalidSyncKeyCommand("left pop timeout", k -> sync.lLeftPop(k, 1L, TimeUnit.SECONDS)),
+                new InvalidSyncKeyCommand("left pop duration", k -> sync.lLeftPop(k, Duration.ofSeconds(1))),
+                new InvalidSyncKeyCommand("left pop count", k -> sync.lLeftPop(k, 1)),
+                new InvalidSyncKeyCommand("right push distinct", k -> sync.lRightPushDistinct(k, "a")),
+                new InvalidSyncKeyCommand("right push", k -> sync.lRightPush(k, "a")),
+                new InvalidSyncKeyCommand("right push seconds", k -> sync.lRightPush(k, "a", 30L)),
+                new InvalidSyncKeyCommand("right push duration", k -> sync.lRightPush(k, "a", Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("right push all", k -> sync.lRightPushAll(k, List.of("a", "b"))),
+                new InvalidSyncKeyCommand("right push all seconds", k -> sync.lRightPushAll(k, List.of("a"), 30L)),
+                new InvalidSyncKeyCommand("right push all duration", k -> sync.lRightPushAll(k, List.of("a"), Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("right push if present", k -> sync.lRightPushx(k, "a")),
+                new InvalidSyncKeyCommand("right push if present seconds", k -> sync.lRightPushx(k, "a", 30L)),
+                new InvalidSyncKeyCommand("right push if present duration", k -> sync.lRightPushx(k, "a", Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("right push if present all seconds", k -> sync.lRightPushxAll(k, List.of("a"), 30L)),
+                new InvalidSyncKeyCommand("right push if present all duration", k -> sync.lRightPushxAll(k, List.of("a"), Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("right pop", sync::lRightPop),
+                new InvalidSyncKeyCommand("right pop and remove", sync::lRightPopAndLrem),
+                new InvalidSyncKeyCommand("right pop timeout", k -> sync.lRightPop(k, 1L, TimeUnit.SECONDS)),
+                new InvalidSyncKeyCommand("right pop duration", k -> sync.lRightPop(k, Duration.ofSeconds(1))),
+                new InvalidSyncKeyCommand("right pop count", k -> sync.lRightPop(k, 1)),
+                new InvalidSyncKeyCommand("move right to left", k -> sync.lRightPopAndLeftPush(k, "destination")),
+                new InvalidSyncKeyCommand("move right to left timeout", k -> sync.lRightPopAndLeftPush(k, "destination", 1L, TimeUnit.SECONDS)),
+                new InvalidSyncKeyCommand("move right to left duration", k -> sync.lRightPopAndLeftPush(k, "destination", Duration.ofSeconds(1))),
+                new InvalidSyncKeyCommand("set index", k -> sync.lSet(k, 0, "a")),
+                new InvalidSyncKeyCommand("size", sync::lSize),
+                new InvalidSyncKeyCommand("trim", k -> sync.lTrim(k, 0, 1)),
+                new InvalidSyncKeyCommand("remove", k -> sync.lRem(k, 1, "a"))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> command.command().accept(null))
+                        .isInstanceOf(RedisOperationException.class)));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> synchronousHashCommandsRejectNullKeys() {
+        List<InvalidSyncKeyCommand> commands = List.of(
+                new InvalidSyncKeyCommand("decrement int", k -> sync.hDecr(k, "field", 1)),
+                new InvalidSyncKeyCommand("decrement long", k -> sync.hDecr(k, "field", 1L)),
+                new InvalidSyncKeyCommand("decrement double", k -> sync.hDecr(k, "field", 1.0)),
+                new InvalidSyncKeyCommand("delete field", k -> sync.hDel(k, "field")),
+                new InvalidSyncKeyCommand("delete hash", k -> sync.hDel(k)),
+                new InvalidSyncKeyCommand("has field", k -> sync.hHasKey(k, "field")),
+                new InvalidSyncKeyCommand("get field", k -> sync.hGet(k, "field")),
+                new InvalidSyncKeyCommand("get fields", k -> sync.hmGet(k, List.of("field"))),
+                new InvalidSyncKeyCommand("get all", k -> sync.hmGet(k)),
+                new InvalidSyncKeyCommand("multi get", k -> sync.hmMultiGet(k, List.of("field"))),
+                new InvalidSyncKeyCommand("map set", k -> sync.hmSet(k, Map.of("field", "value"))),
+                new InvalidSyncKeyCommand("map set seconds", k -> sync.hmSet(k, Map.of("field", "value"), 30L)),
+                new InvalidSyncKeyCommand("map set duration", k -> sync.hmSet(k, Map.of("field", "value"), Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("set field", k -> sync.hSet(k, "field", "value")),
+                new InvalidSyncKeyCommand("set field seconds", k -> sync.hSet(k, "field", "value", 30L)),
+                new InvalidSyncKeyCommand("set field duration", k -> sync.hSet(k, "field", "value", Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("set field if absent", k -> sync.hSetNX(k, "field", "value")),
+                new InvalidSyncKeyCommand("field keys", sync::hKeys),
+                new InvalidSyncKeyCommand("size", sync::hSize),
+                new InvalidSyncKeyCommand("values", sync::hValues),
+                new InvalidSyncKeyCommand("increment int", k -> sync.hIncr(k, "field", 1)),
+                new InvalidSyncKeyCommand("increment int seconds", k -> sync.hIncr(k, "field", 1, 30L)),
+                new InvalidSyncKeyCommand("increment int duration", k -> sync.hIncr(k, "field", 1, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("increment long", k -> sync.hIncr(k, "field", 1L)),
+                new InvalidSyncKeyCommand("increment long seconds", k -> sync.hIncr(k, "field", 1L, 30L)),
+                new InvalidSyncKeyCommand("increment long duration", k -> sync.hIncr(k, "field", 1L, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("increment double", k -> sync.hIncr(k, "field", 1.0)),
+                new InvalidSyncKeyCommand("increment double seconds", k -> sync.hIncr(k, "field", 1.0, 30L)),
+                new InvalidSyncKeyCommand("increment double duration", k -> sync.hIncr(k, "field", 1.0, Duration.ofSeconds(30)))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> command.command().accept(null))
+                        .isInstanceOf(RedisOperationException.class)));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> synchronousSetCommandsRejectNullKeys() {
+        List<InvalidSyncKeyCommand> commands = List.of(
+                new InvalidSyncKeyCommand("add", k -> sync.sAdd(k, "a")),
+                new InvalidSyncKeyCommand("add seconds", k -> sync.sAddAndExpire(k, 30L, "a")),
+                new InvalidSyncKeyCommand("add duration", k -> sync.sAddAndExpire(k, Duration.ofSeconds(30), "a")),
+                new InvalidSyncKeyCommand("delete", sync::sDel),
+                new InvalidSyncKeyCommand("members", sync::sGet),
+                new InvalidSyncKeyCommand("difference", k -> sync.sDiff(k, "other")),
+                new InvalidSyncKeyCommand("difference store", k -> sync.sDiffAndStore(k, "other", "target")),
+                new InvalidSyncKeyCommand("contains", k -> sync.sHasKey(k, "a")),
+                new InvalidSyncKeyCommand("intersection", k -> sync.sIntersect(k, "other")),
+                new InvalidSyncKeyCommand("intersection store", k -> sync.sIntersectAndStore(k, "other", "target")),
+                new InvalidSyncKeyCommand("random", k -> sync.sRandom(k, 1)),
+                new InvalidSyncKeyCommand("random distinct", k -> sync.sRandomDistinct(k, 1)),
+                new InvalidSyncKeyCommand("remove", k -> sync.sRemove(k, "a")),
+                new InvalidSyncKeyCommand("legacy timed", k -> sync.sSetAndTime(k, 30L, "a")),
+                new InvalidSyncKeyCommand("size", sync::sSize),
+                new InvalidSyncKeyCommand("union", k -> sync.sUnion(k, "other")),
+                new InvalidSyncKeyCommand("union store", k -> sync.sUnionAndStore(k, "other", "target"))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> command.command().accept(null))
+                        .isInstanceOf(RedisOperationException.class)));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> synchronousSortedSetCommandsRejectNullKeys() {
+        Set<ZSetOperations.TypedTuple<Object>> tuples = Set.of(new DefaultTypedTuple<>("a", 1.0));
+        List<InvalidSyncKeyCommand> commands = List.of(
+                new InvalidSyncKeyCommand("add", k -> sync.zAdd(k, "a", 1.0)),
+                new InvalidSyncKeyCommand("add seconds", k -> sync.zAdd(k, "a", 1.0, 30L)),
+                new InvalidSyncKeyCommand("add duration", k -> sync.zAdd(k, "a", 1.0, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("add tuples", k -> sync.zAdd(k, tuples)),
+                new InvalidSyncKeyCommand("add tuples seconds", k -> sync.zAdd(k, tuples, 30L)),
+                new InvalidSyncKeyCommand("add tuples duration", k -> sync.zAdd(k, tuples, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("size", sync::zCard),
+                new InvalidSyncKeyCommand("contains", k -> sync.zHas(k, "a")),
+                new InvalidSyncKeyCommand("count", k -> sync.zCount(k, 0.0, 2.0)),
+                new InvalidSyncKeyCommand("delete", sync::zDel),
+                new InvalidSyncKeyCommand("increment", k -> sync.zIncr(k, "a", 1.0)),
+                new InvalidSyncKeyCommand("increment seconds", k -> sync.zIncr(k, "a", 1.0, 30L)),
+                new InvalidSyncKeyCommand("increment duration", k -> sync.zIncr(k, "a", 1.0, Duration.ofSeconds(30))),
+                new InvalidSyncKeyCommand("intersection aggregate", k -> sync.zIntersectAndStore(k, List.of("other"), "target", Aggregate.SUM)),
+                new InvalidSyncKeyCommand("intersection weighted", k -> sync.zIntersectAndStore(k, List.of("other"), "target", Aggregate.SUM, Weights.of(1, 1))),
+                new InvalidSyncKeyCommand("remove", k -> sync.zRem(k, "a")),
+                new InvalidSyncKeyCommand("remove score", k -> sync.zRemByScore(k, 0.0, 2.0)),
+                new InvalidSyncKeyCommand("range", k -> sync.zRange(k, 0, -1)),
+                new InvalidSyncKeyCommand("score range", k -> sync.zRangeByScore(k, 0.0, 2.0)),
+                new InvalidSyncKeyCommand("scored range", k -> sync.zRangeWithScores(k, 0, -1)),
+                new InvalidSyncKeyCommand("score and score range", k -> sync.zRangeByScoreWithScores(k, 0.0, 2.0)),
+                new InvalidSyncKeyCommand("lexical range", k -> sync.zRangeByLex(k, Range.closed("a", "z"))),
+                new InvalidSyncKeyCommand("lexical range limit", k -> sync.zRangeByLex(k, Range.closed("a", "z"), Limit.limit().count(2))),
+                new InvalidSyncKeyCommand("reverse range", k -> sync.zRevrange(k, 0, -1)),
+                new InvalidSyncKeyCommand("reverse scored range", k -> sync.zRevrangeWithScores(k, 0, -1)),
+                new InvalidSyncKeyCommand("reverse score range", k -> sync.zRevrangeByScore(k, 0.0, 2.0)),
+                new InvalidSyncKeyCommand("reverse score and score range", k -> sync.zRevrangeByScoreWithScores(k, 0.0, 2.0)),
+                new InvalidSyncKeyCommand("reverse rank", k -> sync.zRevRank(k, "a")),
+                new InvalidSyncKeyCommand("score", k -> sync.zScore(k, "a")),
+                new InvalidSyncKeyCommand("union aggregate", k -> sync.zUnionAndStore(k, List.of("other"), "target", Aggregate.SUM)),
+                new InvalidSyncKeyCommand("union weighted", k -> sync.zUnionAndStore(k, List.of("other"), "target", Aggregate.SUM, Weights.of(1, 1)))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> command.command().accept(null))
+                        .isInstanceOf(RedisOperationException.class)));
+    }
 }
