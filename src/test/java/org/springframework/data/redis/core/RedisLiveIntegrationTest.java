@@ -25,6 +25,7 @@ import org.springframework.data.redis.connection.DataType;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import reactor.core.publisher.Mono;
 
 /** Exercises public operations against a Redis process owned by this test class. */
 class RedisLiveIntegrationTest {
@@ -685,5 +686,119 @@ class RedisLiveIntegrationTest {
         assertThat(sync.mGetDouble(List.of(first, second))).containsExactly(1.0, 2.0);
         assertThat(reactive.mGetLong(List.of(first, second)).block()).containsExactly(1L, 2L);
         assertThat(reactive.mGetDouble(List.of(first, second)).block()).containsExactly(1.0, 2.0);
+    }
+
+    @Test
+    void distinctListPushMovesExistingMembersWithoutDuplication() {
+        String syncList = key("distinct-sync");
+        sync.lRightPushAll(syncList, List.of("a", "b", "a"));
+        assertThat(sync.lLeftPushDistinct(syncList, "a")).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncList, 0, -1)).containsExactly("a", "b");
+        assertThat(sync.lRightPushDistinct(syncList, "a")).isEqualTo(2L);
+        assertThat(sync.lRangeString(syncList, 0, -1)).containsExactly("b", "a");
+
+        String reactiveList = key("distinct-reactive");
+        reactive.lRightPushAll(reactiveList, List.of("a", "b", "a")).block();
+        assertThat(reactive.lLeftPushDistinct(reactiveList, "a").block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveList, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+        assertThat(reactive.lRightPushDistinct(reactiveList, "a").block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(reactiveList, 0, -1).collectList().block())
+                .containsExactly("b", "a");
+    }
+
+    @Test
+    void reactiveRightPushIfPresentCollectionCompletesEveryWriteBeforeExpiry() {
+        String secondsKey = key("pushx-seconds");
+        List<String> seed = List.of("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9");
+        assertThat(reactive.lRightPushAll(secondsKey, seed).block()).isEqualTo(10L);
+        assertThat(reactive.lRightPushxAll(secondsKey, List.of("a", "b", "c"), 30L).block())
+                .isEqualTo(3L);
+        assertThat(reactive.lRangeString(secondsKey, 0, -1).collectList().block())
+                .containsExactly("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "a", "b", "c");
+        assertTimed(secondsKey);
+
+        String durationKey = key("pushx-duration");
+        assertThat(reactive.lRightPushAll(durationKey, seed).block()).isEqualTo(10L);
+        assertThat(reactive.lRightPushxAll(durationKey, List.of("a", "b", "c"), Duration.ZERO).block())
+                .isEqualTo(3L);
+        assertThat(reactive.lRangeString(durationKey, 0, -1).collectList().block())
+                .containsExactly("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "a", "b", "c");
+        assertThat(reactive.getExpire(durationKey).block()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void timedReactiveBatchIsColdAndNonPositiveTimeoutKeepsExistingTtlPolicy() {
+        String key = key("pushx-cold");
+        reactive.lRightPush(key, "seed").block();
+        Mono<Long> pending = reactive.lRightPushxAll(key, List.of("a", "b"), 30L);
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("seed");
+        assertThat(reactive.getExpire(key).block()).isEqualTo(Duration.ZERO);
+        assertThat(pending.block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("seed", "a", "b");
+        assertTimed(key);
+
+        String zero = key("pushx-zero");
+        reactive.lRightPush(zero, "seed").block();
+        assertThat(reactive.lRightPushxAll(zero, List.of("a", "b"), 0L).block()).isEqualTo(2L);
+        assertThat(reactive.lRangeString(zero, 0, -1).collectList().block())
+                .containsExactly("seed", "a", "b");
+        assertThat(reactive.getExpire(zero).block()).isEqualTo(Duration.ZERO);
+
+        String negative = key("pushx-negative");
+        reactive.lRightPush(negative, "seed").block();
+        assertThat(reactive.lRightPushxAll(negative, List.of("a", "b"), Duration.ofSeconds(-1)).block())
+                .isEqualTo(2L);
+        assertThat(reactive.lRangeString(negative, 0, -1).collectList().block())
+                .containsExactly("seed", "a", "b");
+        assertThat(reactive.getExpire(negative).block()).isEqualTo(Duration.ZERO);
+        assertThat(reactive.lRightPushxAll(negative, List.<String>of(), Duration.ZERO).block()).isZero();
+        assertThat(reactive.lRangeString(negative, 0, -1).collectList().block())
+                .containsExactly("seed", "a", "b");
+    }
+
+    @Test
+    void timedReactiveBatchDoesNotExpireAfterCommandOrLaterValueFailure() {
+        String wrongType = key("pushx-wrong-type");
+        sync.set(wrongType, "plain");
+        assertThatThrownBy(() -> reactive.lRightPushxAll(wrongType, List.of("a", "b"), 30L).block())
+                .hasCauseInstanceOf(io.lettuce.core.RedisCommandExecutionException.class);
+        assertThat(sync.getString(wrongType)).isEqualTo("plain");
+        assertThat(reactive.getExpire(wrongType).block()).isEqualTo(Duration.ZERO);
+
+        String laterBadValue = key("pushx-later-bad-value");
+        reactive.lRightPush(laterBadValue, "seed").block();
+        assertThatThrownBy(() -> reactive.lRightPushxAll(laterBadValue,
+                List.<Object>of("a", 123), 30L).block()).isInstanceOf(RuntimeException.class);
+        assertThat(reactive.lRangeString(laterBadValue, 0, -1).collectList().block())
+                .containsExactly("seed", "a");
+        assertThat(reactive.getExpire(laterBadValue).block()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void expiryErrorPropagatesAfterSuccessfulWriteWithoutClaimingRollback() {
+        String key = key("expiry-error");
+        ReactiveRedisOperationTemplate failingExpiry = new ReactiveRedisOperationTemplate(
+                reactive.getReactiveRedisTemplate(), new ObjectMapper()) {
+            @Override
+            public Mono<Boolean> expire(String key, long seconds) {
+                return Mono.error(new RedisOperationException("expiry rejected"));
+            }
+        };
+        assertThatThrownBy(() -> failingExpiry.lRightPush(key, "value", 30L).block())
+                .isInstanceOf(RedisOperationException.class)
+                .hasMessageContaining("expiry rejected");
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block())
+                .containsExactly("value");
+        assertThat(reactive.getExpire(key).block()).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
+    void updatingExistingHashFieldReturnsFalseButStillSetsExpiry() {
+        String key = key("hash-update-ttl");
+        assertThat(reactive.hSet(key, "field", "old").block()).isTrue();
+        assertThat(reactive.hSet(key, "field", "new", Duration.ofSeconds(30)).block()).isFalse();
+        assertThat(reactive.hGetString(key, "field").block()).isEqualTo("new");
+        assertTimed(key);
     }
 }
