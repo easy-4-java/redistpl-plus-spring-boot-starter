@@ -17,6 +17,7 @@ import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.json.JsonMapperBuilderCustomizer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -1551,5 +1552,30 @@ class RedisLiveIntegrationTest {
                 .containsExactly(12, 23);
         assertThat(sync.mGet(List.of())).isEmpty();
         assertThat(reactive.mGet(List.of()).block()).isNull();
+    }
+
+    @Test
+    void hashWholeMapConversionsPreserveNumericKeysAndValues() {
+        String hash = key("hash-map-conversions");
+        assertThat(sync.hmSet(hash, Map.of("1", "10", "2", "20"))).isTrue();
+        assertThat(sync.hmGetForString(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of("1", "10", "2", "20"));
+        assertThat(sync.hmGetForInteger(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1, 10, 2, 20));
+        assertThat(sync.hmGetForLong(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1L, 10L, 2L, 20L));
+        assertThat(sync.hmGetForDouble(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1.0, 10.0, 2.0, 20.0));
+        assertThat(sync.hmGetForString(hash, Long.class)).containsExactlyInAnyOrderEntriesOf(
+                Map.of("1", 10L, "2", 20L));
+        assertThat(sync.hmGetForString(hash, new TypeReference<Long>() {}))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("1", 10L, "2", 20L));
+        assertThat(sync.hmGetFor(hash, value -> Integer.parseInt((String) value), Long.class))
+                .containsExactlyInAnyOrderEntriesOf(Map.of(1, 10L, 2, 20L));
+        assertThat(sync.hmGetFor(hash, value -> Integer.parseInt((String) value),
+                new TypeReference<Long>() {})).containsExactlyInAnyOrderEntriesOf(
+                Map.of(1, 10L, 2, 20L));
+        assertThat(sync.hmGet(hash)).containsExactlyInAnyOrderEntriesOf(
+                Map.of("1", "10", "2", "20"));
     }
 }
