@@ -2935,4 +2935,62 @@ class RedisLiveIntegrationTest {
         assertThat(sync.pfDel(hll)).isTrue();
         assertThat(sync.hasKey(hll)).isFalse();
     }
+
+    @Test
+    void synchronousJsonValueHelpersConvertPersistedObjects() {
+        String map = key("sync-json-map"), list = key("sync-json-list");
+        sync.set(map, "{\"name\":\"Ada\",\"count\":2}");
+        sync.set(list, "[\"a\",\"b\"]");
+        assertThat(sync.getMap(map)).containsEntry("name", "Ada").containsEntry("count", 2);
+        assertThat(sync.getList(list)).containsExactly("a", "b");
+        assertThat(sync.getList(list, String.class)).containsExactly("a", "b");
+        assertThat(sync.getMap(key("missing-json-map"))).isNull();
+        assertThat(sync.getList(key("missing-json-list"))).isNull();
+        assertThat(sync.getList(key("missing-typed-list"), String.class)).isNull();
+    }
+
+    @Test
+    void synchronousPipelinedHashReadsAndScriptObjectsSeeStoredValues() {
+        String first = key("sync-pipeline-first"), second = key("sync-pipeline-second");
+        sync.hSet(first, "field", "one");
+        sync.hSet(second, "field", "two");
+        assertThat(sync.hGet(List.of(first, second), "field")).containsExactly("one", "two");
+        String prefix = key("sync-pipeline-prefix");
+        String prefixed = RedisKey.getKeyStr(prefix, "item");
+        sync.hSet(prefixed, "field", "prefixed");
+        assertThat(sync.hGet(List.of("item"), prefix, "field")).containsExactly("prefixed");
+
+        StringRedisSerializer strings = new StringRedisSerializer();
+        RedisCallback<Object> read = connection -> {
+            connection.hGet(strings.serialize(first), strings.serialize("field"));
+            return null;
+        };
+        assertThat(sync.executePipelined(read)).containsExactly("one");
+        assertThat(sync.executePipelined(read, strings)).containsExactly("one");
+
+        String script = "return redis.call('HGET', KEYS[1], ARGV[1])";
+        assertThat(sync.executeLuaScript(RedisScript.of(script, String.class), List.of(first), "field"))
+                .isEqualTo("one");
+        assertThat(sync.executeLuaScript(new ByteArrayResource(script.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                String.class, List.of(first), "field")).isEqualTo("one");
+    }
+
+    @Test
+    void synchronousBlockingLockAndPublishUseOnlyOwnedRedisKeys() throws Exception {
+        String lock = key("sync-block-lock");
+        assertThat(sync.tryBlockLock(lock, 1)).isTrue();
+        assertThat(sync.hasKey(lock)).isTrue();
+        assertThat(sync.unBlockLock(lock, "request-1")).isTrue();
+        assertThat(sync.hasKey(lock)).isFalse();
+        assertThat(sync.lRangeString(lock + ":list", 0, -1)).containsExactly("request-1");
+
+        String channel = key("sync-channel");
+        var received = CompletableFuture.supplyAsync(() ->
+                reactive.listenTo(new ChannelTopic(channel)).next().block(Duration.ofSeconds(3)));
+        for (int attempt = 0; attempt < 10 && !received.isDone(); attempt++) {
+            sync.sendMessage(channel, "payload");
+            Thread.sleep(30);
+        }
+        assertThat(received.get(3, TimeUnit.SECONDS).getMessage()).isEqualTo("payload");
+    }
 }
