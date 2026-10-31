@@ -29,6 +29,7 @@ import org.springframework.data.domain.Range;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.connection.DataType;
+import org.springframework.data.redis.connection.Limit;
 import org.springframework.data.redis.connection.zset.Aggregate;
 import org.springframework.data.redis.connection.zset.Weights;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
@@ -2148,5 +2149,114 @@ class RedisLiveIntegrationTest {
                 assertThatThrownBy(() -> Mono.from(command.command().apply(null)).block())
                         .isInstanceOf(RedisOperationException.class)
                         .hasMessageContaining("Key must not be null")));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> reactiveValueAndCounterCommandsRejectNullKeyAtBoundary() {
+        List<InvalidKeyCommand> commands = List.of(
+                new InvalidKeyCommand("expire duration", k -> reactive.expire(k, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("expire at instant", k -> reactive.expireAt(k, java.time.Instant.now().plusSeconds(30))),
+                new InvalidKeyCommand("get expiry", reactive::getExpire),
+                new InvalidKeyCommand("exists", reactive::hasKey),
+                new InvalidKeyCommand("set", k -> reactive.set(k, "value")),
+                new InvalidKeyCommand("set seconds", k -> reactive.set(k, "value", 30L)),
+                new InvalidKeyCommand("set duration", k -> reactive.set(k, "value", Duration.ofSeconds(30))),
+                new InvalidKeyCommand("set if absent seconds", k -> reactive.setNx(k, "value", 30L)),
+                new InvalidKeyCommand("set if absent duration", k -> reactive.setNx(k, "value", Duration.ofSeconds(30))),
+                new InvalidKeyCommand("increment long", k -> reactive.incr(k, 1L)),
+                new InvalidKeyCommand("increment long seconds", k -> reactive.incr(k, 1L, 30L)),
+                new InvalidKeyCommand("increment long duration", k -> reactive.incr(k, 1L, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("increment double", k -> reactive.incr(k, 1.0)),
+                new InvalidKeyCommand("increment double seconds", k -> reactive.incr(k, 1.0, 30L)),
+                new InvalidKeyCommand("increment double duration", k -> reactive.incr(k, 1.0, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("decrement long", k -> reactive.decr(k, 1L)),
+                new InvalidKeyCommand("decrement long seconds", k -> reactive.decr(k, 1L, 30L)),
+                new InvalidKeyCommand("decrement long duration", k -> reactive.decr(k, 1L, Duration.ofSeconds(30))),
+                new InvalidKeyCommand("decrement double", k -> reactive.decr(k, 1.0)),
+                new InvalidKeyCommand("decrement double seconds", k -> reactive.decr(k, 1.0, 30L)),
+                new InvalidKeyCommand("decrement double duration", k -> reactive.decr(k, 1.0, Duration.ofSeconds(30)))
+        );
+        return commands.stream().map(command -> DynamicTest.dynamicTest(command.name(), () ->
+                assertThatThrownBy(() -> Mono.from(command.command().apply(null)).block())
+                        .isInstanceOf(RedisOperationException.class)
+                        .hasMessageContaining("Key must not be null")));
+    }
+
+    @Test
+    void reactiveSetIfAbsentRejectsNullKeyWithItsOwnValidationMessage() {
+        assertThatThrownBy(() -> reactive.setNX(null, "value").block())
+                .isInstanceOf(RedisOperationException.class)
+                .hasMessageContaining("key must not be empty");
+    }
+
+    @Test
+    void reactiveHashBatchReadsExposeEveryStoredField() {
+        String prefix = key("reactive-hash-prefix");
+        String first = RedisKey.getKeyStr(prefix, "first");
+        String second = RedisKey.getKeyStr(prefix, "second");
+        reactive.hmSet(first, Map.<Object, Object>of("id", "first", "count", "11")).block();
+        reactive.hmSet(second, Map.<Object, Object>of("id", "second", "count", "22")).block();
+
+        assertThat(reactive.hGet(first, "missing", "fallback").block()).isEqualTo("fallback");
+        assertThat(reactive.hGet(List.of(first, second), "count").collectList().block())
+                .containsExactlyInAnyOrder("11", "22");
+        assertThat(reactive.hGet(List.of("first", "second"), prefix, "count").collectList().block())
+                .containsExactlyInAnyOrder("11", "22");
+        assertThat(reactive.hmGet(List.of(first, second)).collectList().block())
+                .extracting(Map.Entry::getValue).containsExactlyInAnyOrder("first", "second", "11", "22");
+        assertThat(reactive.hmGet(List.of("first", "second"), prefix).collectList().block())
+                .extracting(Map.Entry::getValue).containsExactlyInAnyOrder("first", "second", "11", "22");
+        assertThat(reactive.hmMultiGet(List.of(first, second), List.<Object>of("count")).collectList().block())
+                .containsExactlyInAnyOrder(Map.of("count", "11"), Map.of("count", "22"));
+        assertThat(reactive.hmMultiGet(List.of(first, second), "id", List.<Object>of("id", "count")).block())
+                .containsKeys("first", "second");
+        assertThat(reactive.hmMultiGetAll(List.of(first, second)).collectList().block())
+                .extracting(Map.Entry::getValue).containsExactlyInAnyOrder("first", "second", "11", "22");
+        assertThat(reactive.hmMultiGetAll(List.of("first", "second"), prefix).collectList().block())
+                .extracting(Map.Entry::getValue).containsExactlyInAnyOrder("first", "second", "11", "22");
+    }
+
+    @Test
+    void reactiveListPopAndMoveOverloadsChangeStoredOrder() {
+        String left = key("reactive-pop-left"), right = key("reactive-pop-right");
+        reactive.lRightPushAll(left, List.of("a", "b", "a")).block();
+        reactive.lRightPushAll(right, List.of("x", "y", "x")).block();
+        assertThat(reactive.lLeftPopAndLrem(left).block()).isEqualTo("a");
+        assertThat(reactive.lRightPopAndLrem(right).block()).isEqualTo("x");
+        assertThat(reactive.lRangeString(left, 0, -1).collectList().block()).contains("b");
+        assertThat(reactive.lRangeString(right, 0, -1).collectList().block()).contains("y");
+
+        String counted = key("reactive-pop-count"), moved = key("reactive-pop-moved");
+        reactive.lRightPushAll(counted, List.of("1", "2", "3")).block();
+        assertThat(reactive.lLeftPop(counted, 2, String.class).collectList().block()).containsExactly("1", "2");
+        assertThat(reactive.lRangeString(counted, 0, -1).collectList().block()).containsExactly("3");
+        assertThat(reactive.lRightPopAndLeftPush(counted, moved, Duration.ofSeconds(1)).block()).isEqualTo("3");
+        assertThat(reactive.lRangeString(moved, 0, -1).collectList().block()).containsExactly("3");
+    }
+
+    @Test
+    void reactiveHyperLogLogMergeAndDeleteAffectCardinality() {
+        String first = key("reactive-hll-first"), second = key("reactive-hll-second");
+        String merged = key("reactive-hll-merged");
+        assertThat(reactive.pfAdd(first, "a", "b").block()).isEqualTo(1L);
+        assertThat(reactive.pfAdd(second, "b", "c").block()).isEqualTo(1L);
+        assertThat(reactive.pfMerge(merged, first, second).block()).isTrue();
+        assertThat(reactive.pfCount(merged).block()).isEqualTo(3L);
+        assertThat(reactive.pfDel(merged).block()).isTrue();
+        assertThat(reactive.hasKey(merged).block()).isFalse();
+    }
+
+    @Test
+    void reactiveLexicalSortedRangesRespectBoundsAndLimit() {
+        String sorted = key("reactive-lexical");
+        reactive.zAdd(sorted, "alpha", 0.0).block();
+        reactive.zAdd(sorted, "bravo", 0.0).block();
+        reactive.zAdd(sorted, "charlie", 0.0).block();
+        assertThat(reactive.zRangeByLex(sorted, Range.closed("alpha", "charlie")).collectList().block())
+                .containsExactly("alpha", "bravo", "charlie");
+        assertThat(reactive.zRangeByLex(sorted, Range.closed("alpha", "charlie"), Limit.limit().count(2))
+                .collectList().block()).containsExactly("alpha", "bravo");
+        assertThat(reactive.zRangeByScoreWithScores(sorted, Range.closed(0.0, 0.0)).collectList().block())
+                .extracting(tuple -> tuple.getValue()).containsExactly("alpha", "bravo", "charlie");
     }
 }
