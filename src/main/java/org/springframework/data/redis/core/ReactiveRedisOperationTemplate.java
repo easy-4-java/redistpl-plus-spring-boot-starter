@@ -3688,7 +3688,7 @@ public class ReactiveRedisOperationTemplate {
        try {
 			return reactiveRedisTemplate.createMono((ReactiveRedisCallback<Boolean>) redisConnection -> {
 				// 1、执行lua脚本
-				Long result =  this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, expire).block();
+				Long result =  this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, String.valueOf(expire)).block();
 				if(LOCK_SUCCESS.equals(result)) {
 				    log.info("locked... redisK = {}", lockKey);
 				    return Mono.just(true);
@@ -3698,7 +3698,7 @@ public class ReactiveRedisOperationTemplate {
 			        while(count < retryTimes) {
 			            try {
 			                Thread.sleep(retryInterval);
-			                result = this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, expire).block();
+				                result = this.executeLuaScript(LOCK_LUA_SCRIPT, Collections.singletonList(lockKey), requestId, String.valueOf(expire)).block();
 			                if(LOCK_SUCCESS.equals(result)) {
 			                	log.info("locked... redisK = {}", lockKey);
 			                	return Mono.just(true);
