@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
@@ -1494,5 +1495,61 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.zIntersectAndStore(left, List.of(right), reactiveIntersection,
                 Aggregate.MIN).block()).isEqualTo(1L);
         assertThat(reactive.zScore(reactiveIntersection, "b").block()).isEqualTo(2.0);
+    }
+
+    @Test
+    void setIfAbsentTimeoutOverloadsDoNotOverwriteExistingValues() {
+        String syncMillis = key("nx-sync-millis");
+        assertThat(sync.setNx(syncMillis, "first", 30_000L)).isTrue();
+        assertThat(sync.setNx(syncMillis, "second", 30_000L)).isFalse();
+        assertThat(sync.getString(syncMillis)).isEqualTo("first");
+        assertThat(sync.getExpire(syncMillis)).isBetween(1L, 30L);
+
+        String syncUnit = key("nx-sync-unit");
+        assertThat(sync.setNx(syncUnit, "first", 30L, TimeUnit.SECONDS)).isTrue();
+        assertThat(sync.setNx(syncUnit, "second", 30L, TimeUnit.SECONDS)).isFalse();
+        assertThat(sync.getString(syncUnit)).isEqualTo("first");
+        assertThat(sync.getExpire(syncUnit)).isBetween(1L, 30L);
+
+        String syncDuration = key("nx-sync-duration");
+        assertThat(sync.setNx(syncDuration, "first", Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.setNx(syncDuration, "second", Duration.ofSeconds(30))).isFalse();
+        assertThat(sync.getString(syncDuration)).isEqualTo("first");
+        assertThat(sync.getExpire(syncDuration)).isBetween(1L, 30L);
+
+        String reactiveMillis = key("nx-reactive-millis");
+        assertThat(reactive.setNx(reactiveMillis, "first", 30_000L).block()).isTrue();
+        assertThat(reactive.setNx(reactiveMillis, "second", 30_000L).block()).isFalse();
+        assertThat(reactive.getString(reactiveMillis).block()).isEqualTo("first");
+        assertTimed(reactiveMillis);
+
+        String reactiveDuration = key("nx-reactive-duration");
+        assertThat(reactive.setNx(reactiveDuration, "first", Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.setNx(reactiveDuration, "second", Duration.ofSeconds(30)).block()).isFalse();
+        assertThat(reactive.getString(reactiveDuration).block()).isEqualTo("first");
+        assertTimed(reactiveDuration);
+    }
+
+    @Test
+    void valueBatchReadsResolvePatternsPrefixesAndTypedNumbers() {
+        String prefix = key("value-batch-prefix");
+        String first = RedisKey.getKeyStr(prefix, "one");
+        String second = RedisKey.getKeyStr(prefix, "two");
+        sync.set(first, "11");
+        sync.set(second, "22");
+        assertThat(sync.mGet(List.<Object>of("one", "two"), prefix)).containsExactly("11", "22");
+        assertThat(reactive.mGet(List.<Object>of("one", "two"), prefix).block())
+                .containsExactly("11", "22");
+        String pattern = RedisKey.getKeyStr(prefix) + ":*";
+        assertThat(sync.mGet(pattern)).containsExactlyInAnyOrder("11", "22");
+        assertThat(reactive.mGet(pattern).block()).containsExactlyInAnyOrder("11", "22");
+        assertThat(sync.mGetInteger(List.of(first, second))).containsExactly(11, 22);
+        assertThat(reactive.mGetInteger(List.of(first, second)).block()).containsExactly(11, 22);
+        assertThat(sync.mGetFor(List.of(first, second), value -> Integer.parseInt((String) value) + 1))
+                .containsExactly(12, 23);
+        assertThat(reactive.mGetFor(List.of(first, second), value -> Integer.parseInt((String) value) + 1).block())
+                .containsExactly(12, 23);
+        assertThat(sync.mGet(List.of())).isEmpty();
+        assertThat(reactive.mGet(List.of()).block()).isNull();
     }
 }
