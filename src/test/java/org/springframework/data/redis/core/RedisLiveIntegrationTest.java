@@ -6,11 +6,15 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 import org.springframework.data.domain.Range;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
@@ -56,8 +60,11 @@ class RedisLiveIntegrationTest {
 
     @AfterAll
     static void stop() throws Exception {
-        if (connection != null) connection.destroy();
-        if (redis != null) redis.close();
+        try {
+            if (connection != null) connection.destroy();
+        } finally {
+            if (redis != null) redis.close();
+        }
     }
 
     private String key(String suffix) {
@@ -338,5 +345,118 @@ class RedisLiveIntegrationTest {
     private void assertTimed(String key) {
         assertThat(reactive.getExpire(key).block())
                 .isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+    }
+
+    private record TimedWrite(String name, Consumer<String> verify) {}
+
+    @TestFactory
+    Stream<DynamicTest> reactiveTimedOverloadsKeepTheirValueAndExpiry() {
+        return Stream.of(
+                new TimedWrite("increment long duration", key -> {
+                    assertThat(reactive.incr(key, 4L, Duration.ofSeconds(30)).block()).isEqualTo(4L);
+                    assertThat(reactive.getLong(key).block()).isEqualTo(4L);
+                }),
+                new TimedWrite("increment double seconds", key -> {
+                    assertThat(reactive.incr(key, 1.5, 30L).block()).isEqualTo(1.5);
+                    assertThat(reactive.getDouble(key).block()).isEqualTo(1.5);
+                }),
+                new TimedWrite("decrement long seconds", key -> {
+                    assertThat(reactive.decr(key, 2L, 30L).block()).isEqualTo(-2L);
+                    assertThat(reactive.getLong(key).block()).isEqualTo(-2L);
+                }),
+                new TimedWrite("decrement double duration", key -> {
+                    assertThat(reactive.decr(key, 1.25, Duration.ofSeconds(30)).block()).isEqualTo(-1.25);
+                    assertThat(reactive.getDouble(key).block()).isEqualTo(-1.25);
+                }),
+                new TimedWrite("left push duration", key -> {
+                    assertThat(reactive.lLeftPush(key, "one", Duration.ofSeconds(30)).block()).isEqualTo(1L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one");
+                }),
+                new TimedWrite("left push all seconds", key -> {
+                    assertThat(reactive.lLeftPushAll(key, List.of("one", "two"), 30L).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("two", "one");
+                }),
+                new TimedWrite("left push if present duration", key -> {
+                    assertThat(reactive.lLeftPush(key, "one").block()).isEqualTo(1L);
+                    assertThat(reactive.lLeftPushx(key, "zero", Duration.ofSeconds(30)).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("zero", "one");
+                }),
+                new TimedWrite("right push seconds", key -> {
+                    assertThat(reactive.lRightPush(key, "one", 30L).block()).isEqualTo(1L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one");
+                }),
+                new TimedWrite("right push all duration", key -> {
+                    assertThat(reactive.lRightPushAll(key, List.of("one", "two"), Duration.ofSeconds(30)).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one", "two");
+                }),
+                new TimedWrite("right push if present seconds", key -> {
+                    assertThat(reactive.lRightPush(key, "one").block()).isEqualTo(1L);
+                    assertThat(reactive.lRightPushx(key, "two", 30L).block()).isEqualTo(2L);
+                    assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one", "two");
+                }),
+                new TimedWrite("hash set seconds", key -> {
+                    assertThat(reactive.hSet(key, "status", "ready", 30L).block()).isTrue();
+                    assertThat(reactive.hGetString(key, "status").block()).isEqualTo("ready");
+                }),
+                new TimedWrite("hash increment long duration", key -> {
+                    assertThat(reactive.hIncr(key, "hits", 4L, Duration.ofSeconds(30)).block()).isEqualTo(4L);
+                    assertThat(reactive.hGetLong(key, "hits").block()).isEqualTo(4L);
+                }),
+                new TimedWrite("hash increment double seconds", key -> {
+                    assertThat(reactive.hIncr(key, "ratio", 1.5, 30L).block()).isEqualTo(1.5);
+                    assertThat(reactive.hGetDouble(key, "ratio").block()).isEqualTo(1.5);
+                }),
+                new TimedWrite("set add duration", key -> {
+                    assertThat(reactive.sAddAndExpire(key, Duration.ofSeconds(30), "member").block()).isEqualTo(1L);
+                    assertThat(reactive.sHasKey(key, "member").block()).isTrue();
+                }),
+                new TimedWrite("sorted set increment seconds", key -> {
+                    assertThat(reactive.zIncr(key, "member", 1.5, 30L).block()).isEqualTo(1.5);
+                    assertThat(reactive.zScore(key, "member").block()).isEqualTo(1.5);
+                })
+        ).map(write -> DynamicTest.dynamicTest(write.name(), () -> {
+            String key = key("timed-" + write.name().replace(' ', '-'));
+            write.verify().accept(key);
+            assertTimed(key);
+        }));
+    }
+
+    @Test
+    void streamRecordsCanBeReadAndDeletedById() {
+        String stream = key("stream");
+        var first = sync.xAdd(stream, Map.of("event", "created"));
+        var second = sync.xAdd(stream, Map.of("event", "updated"));
+        assertThat(first).isNotNull();
+        assertThat(second).isNotEqualTo(first);
+        assertThat(sync.xLen(stream)).isEqualTo(2L);
+        assertThat(sync.xRange(stream, Range.unbounded()))
+                .extracting(record -> record.getValue().get("event"))
+                .containsExactly("created", "updated");
+        assertThat(sync.xDel(stream, first)).isEqualTo(1L);
+        assertThat(sync.xLen(stream)).isEqualTo(1L);
+        assertThat(sync.xRange(stream, Range.unbounded()))
+                .extracting(record -> record.getValue().get("event"))
+                .containsExactly("updated");
+    }
+
+    @Test
+    void bitmapAndHyperLogLogCommandsUseRealServerState() {
+        String bitmap = key("bitmap");
+        assertThat(sync.getBit(bitmap, 7)).isFalse();
+        assertThat(sync.setBit(bitmap, 7, true)).isFalse();
+        assertThat(sync.getBit(bitmap, 7)).isTrue();
+        assertThat(reactive.getBit(bitmap, 7).block()).isTrue();
+        assertThat(reactive.setBit(bitmap, 7, false).block()).isTrue();
+        assertThat(sync.getBit(bitmap, 7)).isFalse();
+
+        String first = key("hll-1");
+        String second = key("hll-2");
+        assertThat(sync.pfAdd(first, "a", "b")).isEqualTo(1L);
+        assertThat(sync.pfCount(first)).isEqualTo(2L);
+        assertThat(reactive.pfAdd(second, "b", "c").block()).isEqualTo(1L);
+        assertThat(reactive.pfCount(second).block()).isEqualTo(2L);
+        String merged = key("hll-merged");
+        assertThat(sync.pfMerge(merged, first, second)).isEqualTo(3L);
+        assertThat(sync.pfCount(merged)).isEqualTo(3L);
     }
 }
