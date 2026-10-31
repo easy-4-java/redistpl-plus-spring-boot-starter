@@ -26,6 +26,8 @@ import org.springframework.data.domain.Range;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.connection.DataType;
+import org.springframework.data.redis.connection.zset.Aggregate;
+import org.springframework.data.redis.connection.zset.Weights;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
@@ -1422,5 +1424,75 @@ class RedisLiveIntegrationTest {
         String plainKey = key("configured-string-value");
         strings.opsForValue().set(plainKey, "plain");
         assertThat(strings.opsForValue().get(plainKey)).isEqualTo("plain");
+    }
+
+    @Test
+    void sortedSetTypedScoreAndReverseRangesPreserveOrder() {
+        String key = key("zset-range-typed");
+        assertThat(sync.zAdd(key, "1", 10.0)).isTrue();
+        assertThat(sync.zAdd(key, "2", 20.0)).isTrue();
+        assertThat(sync.zAdd(key, "3", 30.0)).isTrue();
+        assertThat(sync.zRangeInteger(key, 0, -1)).containsExactly(1, 2, 3);
+        assertThat(sync.zRevrangeInteger(key, 0, -1)).containsExactly(3, 2, 1);
+        assertThat(sync.zRangeStringByScore(key, 15.0, 30.0)).containsExactly("2", "3");
+        assertThat(sync.zRevrangeStringByScore(key, 15.0, 30.0)).containsExactly("3", "2");
+        assertThat(sync.zRangeWithScores(key, 0, -1))
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(10.0, 20.0, 30.0);
+        assertThat(sync.zRevrangeWithScores(key, 0, -1))
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0, 10.0);
+        assertThat(sync.zRevrangeByScoreWithScores(key, 15.0, 30.0))
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0);
+
+        Range<Long> positions = Range.closed(0L, 2L);
+        Range<Double> scores = Range.closed(15.0, 30.0);
+        assertThat(reactive.zRangeInteger(key, positions).collectList().block()).containsExactly(1, 2, 3);
+        assertThat(reactive.zRevrangeInteger(key, positions).collectList().block()).containsExactly(3, 2, 1);
+        assertThat(reactive.zRangeStringByScore(key, scores).collectList().block())
+                .containsExactly("2", "3");
+        assertThat(reactive.zRevrangeStringByScore(key, scores).collectList().block())
+                .containsExactly("3", "2");
+        assertThat(reactive.zRangeWithScores(key, positions).collectList().block())
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(10.0, 20.0, 30.0);
+        assertThat(reactive.zRevrangeWithScores(key, positions).collectList().block())
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0, 10.0);
+        assertThat(reactive.zRevrangeByScoreWithScores(key, scores).collectList().block())
+                .extracting(ZSetOperations.TypedTuple::getScore).containsExactly(30.0, 20.0);
+    }
+
+    @Test
+    void sortedSetUnionAndIntersectionApplyWeightsAndAggregation() {
+        String left = key("zset-weight-left");
+        String right = key("zset-weight-right");
+        sync.zAdd(left, "a", 1.0);
+        sync.zAdd(left, "b", 2.0);
+        sync.zAdd(right, "b", 3.0);
+        sync.zAdd(right, "c", 4.0);
+
+        String syncMin = key("zset-union-min");
+        assertThat(sync.zUnionAndStore(left, List.of(right), syncMin, Aggregate.MIN)).isEqualTo(3L);
+        assertThat(sync.zScore(syncMin, "b")).isEqualTo(2.0);
+        String syncWeighted = key("zset-union-weighted");
+        assertThat(sync.zUnionAndStore(left, List.of(right), syncWeighted,
+                Aggregate.SUM, Weights.of(2, 3))).isEqualTo(3L);
+        assertThat(sync.zScore(syncWeighted, "a")).isEqualTo(2.0);
+        assertThat(sync.zScore(syncWeighted, "b")).isEqualTo(13.0);
+        assertThat(sync.zScore(syncWeighted, "c")).isEqualTo(12.0);
+        String syncIntersection = key("zset-intersection-max");
+        assertThat(sync.zIntersectAndStore(left, List.of(right), syncIntersection, Aggregate.MAX))
+                .isEqualTo(1L);
+        assertThat(sync.zScore(syncIntersection, "b")).isEqualTo(3.0);
+
+        String reactiveMax = key("zset-union-reactive-max");
+        assertThat(reactive.zUnionAndStore(left, List.of(right), reactiveMax, Aggregate.MAX).block())
+                .isEqualTo(3L);
+        assertThat(reactive.zScore(reactiveMax, "b").block()).isEqualTo(3.0);
+        String reactiveWeighted = key("zset-union-reactive-weighted");
+        assertThat(reactive.zUnionAndStore(left, List.of(right), reactiveWeighted,
+                Aggregate.SUM, Weights.of(2, 3)).block()).isEqualTo(3L);
+        assertThat(reactive.zScore(reactiveWeighted, "b").block()).isEqualTo(13.0);
+        String reactiveIntersection = key("zset-intersection-reactive-min");
+        assertThat(reactive.zIntersectAndStore(left, List.of(right), reactiveIntersection,
+                Aggregate.MIN).block()).isEqualTo(1L);
+        assertThat(reactive.zScore(reactiveIntersection, "b").block()).isEqualTo(2.0);
     }
 }
