@@ -956,4 +956,43 @@ class RedisLiveIntegrationTest {
                 .isZero();
         assertThat(sync.lRangeString(leftSeconds, 0, -1)).containsExactly("b", "a", "seed");
     }
+
+    @Test
+    void batchListPopReturnsRemovedMembersAndLeavesTheRest() {
+        String syncLeft = key("sync-pop-left");
+        sync.lRightPushAll(syncLeft, List.of("a", "b", "c", "d"));
+        assertThat(sync.lLeftPop(syncLeft, 2)).containsExactly("a", "b");
+        assertThat(sync.lRangeString(syncLeft, 0, -1)).containsExactly("c", "d");
+
+        String syncRight = key("sync-pop-right");
+        sync.lRightPushAll(syncRight, List.of("a", "b", "c", "d"));
+        assertThat(sync.lRightPop(syncRight, 2)).containsExactly("c", "d");
+        assertThat(sync.lRangeString(syncRight, 0, -1)).containsExactly("a", "b");
+
+        String reactiveLeft = key("reactive-pop-left");
+        reactive.lRightPushAll(reactiveLeft, List.of("a", "b", "c", "d")).block();
+        assertThat(reactive.lLeftPop(reactiveLeft, 2).collectList().block()).containsExactly("a", "b");
+        assertThat(reactive.lRangeString(reactiveLeft, 0, -1).collectList().block())
+                .containsExactly("c", "d");
+
+        String reactiveRight = key("reactive-pop-right");
+        reactive.lRightPushAll(reactiveRight, List.of("a", "b", "c", "d")).block();
+        assertThat(reactive.lRightPop(reactiveRight, 2).collectList().block()).containsExactly("c", "d");
+        assertThat(reactive.lRangeString(reactiveRight, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+
+        assertThat(sync.lLeftPop(syncLeft, 0)).isEmpty();
+        assertThat(sync.lRightPop(syncRight, 0)).isEmpty();
+        assertThat(reactive.lLeftPop(reactiveLeft, 0).collectList().block()).isEmpty();
+        assertThat(reactive.lRightPop(reactiveRight, 0).collectList().block()).isEmpty();
+        assertThat(sync.lRangeString(syncLeft, 0, -1)).containsExactly("c", "d");
+        assertThat(reactive.lRangeString(reactiveRight, 0, -1).collectList().block())
+                .containsExactly("a", "b");
+
+        assertThat(sync.lRightPop(syncRight, 10)).containsExactly("a", "b");
+        assertThat(sync.hasKey(syncRight)).isFalse();
+        assertThat(reactive.lLeftPop(reactiveLeft, 10).collectList().block())
+                .containsExactly("c", "d");
+        assertThat(reactive.hasKey(reactiveLeft).block()).isFalse();
+    }
 }
