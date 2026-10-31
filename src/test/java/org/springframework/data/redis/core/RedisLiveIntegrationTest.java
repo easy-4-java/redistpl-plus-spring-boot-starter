@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -300,5 +301,42 @@ class RedisLiveIntegrationTest {
         assertThat(sync.executeLuaScript(script, String.class, List.of(key))).isEqualTo("value");
         assertThat(reactive.executeLuaScript(script, String.class, List.of(key)).block())
                 .isEqualTo("value");
+    }
+
+    @Test
+    void reactiveTimedListWriteActuallySetsExpiry() {
+        String key = key("timed-list");
+        assertThat(reactive.lLeftPush(key, "one", 30L).block()).isEqualTo(1L);
+        assertThat(reactive.lRangeString(key, 0, -1).collectList().block()).containsExactly("one");
+        assertThat(reactive.getExpire(key).block())
+                .isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
+    }
+
+    @Test
+    void reactiveTimedWritesAcrossCommandFamiliesSetExpiry() {
+        String counter = key("timed-counter");
+        assertThat(reactive.incr(counter, 2L, 30L).block()).isEqualTo(2L);
+        assertThat(reactive.getLong(counter).block()).isEqualTo(2L);
+        assertTimed(counter);
+
+        String hash = key("timed-hash");
+        assertThat(reactive.hmSet(hash, Map.<Object, Object>of("status", "ready"), Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.hGetString(hash, "status").block()).isEqualTo("ready");
+        assertTimed(hash);
+
+        String set = key("timed-set");
+        assertThat(reactive.sAddAndExpire(set, 30L, "member").block()).isEqualTo(1L);
+        assertThat(reactive.sHasKey(set, "member").block()).isTrue();
+        assertTimed(set);
+
+        String ranked = key("timed-zset");
+        assertThat(reactive.zIncr(ranked, "member", 2.0, Duration.ofSeconds(30)).block()).isEqualTo(2.0);
+        assertThat(reactive.zScore(ranked, "member").block()).isEqualTo(2.0);
+        assertTimed(ranked);
+    }
+
+    private void assertTimed(String key) {
+        assertThat(reactive.getExpire(key).block())
+                .isBetween(Duration.ofSeconds(1), Duration.ofSeconds(30));
     }
 }
