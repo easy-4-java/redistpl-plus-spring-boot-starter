@@ -995,4 +995,54 @@ class RedisLiveIntegrationTest {
                 .containsExactly("c", "d");
         assertThat(reactive.hasKey(reactiveLeft).block()).isFalse();
     }
+
+    @Test
+    void hashWritesAcrossKeysRespectNxAndExpireWithoutLosingValues() {
+        String first = key("hash-pipeline-a");
+        String second = key("hash-pipeline-b");
+        assertThat(sync.hSet(List.of(first, second), "shared", "one")).isTrue();
+        assertThat(sync.hGet(first, "shared")).isEqualTo("one");
+        assertThat(sync.hGet(second, "shared")).isEqualTo("one");
+        assertThat(sync.hSetNX(first, "shared", "replacement")).isFalse();
+        assertThat(sync.hSetNX(first, "new", "two")).isTrue();
+        assertThat(sync.hSet(first, "timed", "three", 30L)).isTrue();
+        assertThat(sync.hSet(second, "timed", "four", Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.hSize(first)).isEqualTo(3L);
+        assertThat(sync.hGet(first, "shared")).isEqualTo("one");
+        assertThat(sync.hGet(first, "new")).isEqualTo("two");
+        assertThat(sync.getExpire(first)).isBetween(1L, 30L);
+        assertThat(sync.getExpire(second)).isBetween(1L, 30L);
+
+        String reactiveKey = key("hash-reactive-nx");
+        assertThat(reactive.hSet(reactiveKey, "shared", "one", 30L).block()).isTrue();
+        assertThat(reactive.hSetNX(reactiveKey, "shared", "replacement").block()).isFalse();
+        assertThat(reactive.hSetNX(reactiveKey, "new", "two").block()).isTrue();
+        assertThat(reactive.hSet(reactiveKey, "timed", "three", Duration.ofSeconds(30)).block()).isTrue();
+        assertThat(reactive.hSize(reactiveKey).block()).isEqualTo(3L);
+        assertThat(reactive.hGet(reactiveKey, "shared").block()).isEqualTo("one");
+        assertThat(reactive.hGet(reactiveKey, "new").block()).isEqualTo("two");
+        assertTimed(reactiveKey);
+    }
+
+    @Test
+    void sortedSetTimedWritesKeepScoresAndRankOrder() {
+        String key = key("zset-timed-sync");
+        assertThat(sync.zAdd(key, "low", 1.0, 30L)).isTrue();
+        assertThat(sync.zAdd(key, "high", 3.0, Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.zIncr(key, "low", 1.0, 30L)).isEqualTo(2.0);
+        assertThat(sync.zIncr(key, "low", 2.0, Duration.ofSeconds(30))).isEqualTo(4.0);
+        assertThat(sync.zRange(key, 0, -1)).containsExactly("high", "low");
+        assertThat(sync.zScore(key, "low")).isEqualTo(4.0);
+        assertThat(sync.getExpire(key)).isBetween(1L, 30L);
+
+        String reactiveKey = key("zset-timed-reactive");
+        assertThat(reactive.zAdd(reactiveKey, "low", 1.0).block()).isTrue();
+        assertThat(reactive.zAdd(reactiveKey, "high", 3.0).block()).isTrue();
+        assertThat(reactive.zIncr(reactiveKey, "low", 1.0, 30L).block()).isEqualTo(2.0);
+        assertThat(reactive.zIncr(reactiveKey, "low", 2.0, Duration.ofSeconds(30)).block()).isEqualTo(4.0);
+        assertThat(reactive.zRange(reactiveKey, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("high", "low");
+        assertThat(reactive.zScore(reactiveKey, "low").block()).isEqualTo(4.0);
+        assertTimed(reactiveKey);
+    }
 }
