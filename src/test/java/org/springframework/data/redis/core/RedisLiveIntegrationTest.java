@@ -801,4 +801,12 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.hGetString(key, "field").block()).isEqualTo("new");
         assertTimed(key);
     }
+
+    @Test
+    void reactiveGeoDistanceHelpersUseMeters() {
+        ReactiveGeoTemplate geo = new ReactiveGeoTemplate();
+        assertThat(geo.getDistance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+        assertThat(geo.getSphereDistance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+        assertThat(geo.getWGS84Distance(0.0, 0.0, 0.0, 0.01)).isBetween(1000.0, 1200.0);
+    }
 }
