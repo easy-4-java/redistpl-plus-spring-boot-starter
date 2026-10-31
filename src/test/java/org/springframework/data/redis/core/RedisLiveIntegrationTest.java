@@ -612,4 +612,78 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.lTrim(list, 0, 0).block()).isTrue();
         assertThat(reactive.lRangeString(list, 0, -1).collectList().block()).containsExactly("a");
     }
+
+    @Test
+    void synchronousTypedReadsConvertStoredNumericText() {
+        String value = key("typed-value");
+        sync.set(value, "12");
+        assertThat(sync.getLong(value)).isEqualTo(12L);
+        assertThat(sync.getInteger(value)).isEqualTo(12);
+        assertThat(sync.getDouble(value)).isEqualTo(12.0);
+        assertThat(sync.getLong(key("missing-long"), 7L)).isEqualTo(7L);
+        String list = key("typed-list");
+        sync.lRightPushAll(list, List.of("1", "2"));
+        assertThat(sync.lRangeLong(list, 0, -1)).containsExactly(1L, 2L);
+        assertThat(sync.lRangeDouble(list, 0, -1)).containsExactly(1.0, 2.0);
+        String hash = key("typed-hash");
+        sync.hmSet(hash, Map.of("a", "1", "b", "2"));
+        assertThat(sync.hGetLong(hash, "a")).isEqualTo(1L);
+        assertThat(sync.hGetDouble(hash, "b")).isEqualTo(2.0);
+        String set = key("typed-set");
+        sync.sAdd(set, "1", "2");
+        assertThat(sync.sGetLong(set)).containsExactlyInAnyOrder(1L, 2L);
+        String ranked = key("typed-zset");
+        sync.zAdd(ranked, "1", 1.0);
+        sync.zAdd(ranked, "2", 2.0);
+        assertThat(sync.zRangeLong(ranked, 0, -1)).containsExactly(1L, 2L);
+        assertThat(sync.zRangeDoubleByScore(ranked, 1.0, 2.0)).containsExactly(1.0, 2.0);
+    }
+
+    @Test
+    void reactiveTypedReadsConvertStoredNumericText() {
+        String value = key("typed-value-reactive");
+        reactive.set(value, "12").block();
+        assertThat(reactive.getLong(value).block()).isEqualTo(12L);
+        assertThat(reactive.getInteger(value).block()).isEqualTo(12);
+        assertThat(reactive.getDouble(value).block()).isEqualTo(12.0);
+        String list = key("typed-list-reactive");
+        reactive.lRightPushAll(list, List.of("1", "2")).block();
+        assertThat(reactive.lRangeLong(list, 0, -1).collectList().block()).containsExactly(1L, 2L);
+        assertThat(reactive.lRangeDouble(list, 0, -1).collectList().block()).containsExactly(1.0, 2.0);
+        String hash = key("typed-hash-reactive");
+        reactive.hmSet(hash, Map.<Object, Object>of("a", "1", "b", "2")).block();
+        assertThat(reactive.hGetLong(hash, "a").block()).isEqualTo(1L);
+        assertThat(reactive.hGetDouble(hash, "b").block()).isEqualTo(2.0);
+        String set = key("typed-set-reactive");
+        reactive.sAdd(set, "1", "2").block();
+        assertThat(reactive.sGetLong(set).collectList().block()).containsExactlyInAnyOrder(1L, 2L);
+        String ranked = key("typed-zset-reactive");
+        reactive.zAdd(ranked, "1", 1.0).block();
+        reactive.zAdd(ranked, "2", 2.0).block();
+        assertThat(reactive.zRangeLong(ranked, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly(1L, 2L);
+        assertThat(reactive.zRangeDoubleByScore(ranked, Range.closed(1.0, 2.0)).collectList().block())
+                .containsExactly(1.0, 2.0);
+    }
+
+    @Test
+    void stringRangesAndBatchNumericReadsUseActualRedisValues() {
+        String string = key("range");
+        sync.set(string, "hello");
+        assertThat(sync.getRange(string, 0, 1)).isEqualTo("he");
+        sync.setRange(string, "y", 1);
+        assertThat(sync.getString(string)).isEqualTo("hyllo");
+        assertThat(sync.append(string, "!")).isEqualTo(6);
+        assertThat(sync.getStringAndSet(string, "done")).isEqualTo("hyllo!");
+        assertThat(sync.getString(string)).isEqualTo("done");
+
+        String first = key("numeric-one");
+        String second = key("numeric-two");
+        sync.set(first, "1");
+        sync.set(second, "2");
+        assertThat(sync.mGetLong(List.of(first, second))).containsExactly(1L, 2L);
+        assertThat(sync.mGetDouble(List.of(first, second))).containsExactly(1.0, 2.0);
+        assertThat(reactive.mGetLong(List.of(first, second)).block()).containsExactly(1L, 2L);
+        assertThat(reactive.mGetDouble(List.of(first, second)).block()).containsExactly(1.0, 2.0);
+    }
 }
