@@ -1295,4 +1295,71 @@ class RedisLiveIntegrationTest {
             assertThat(wrapped.hGetString(hashKey, "status").block()).isEqualTo("ready");
         }
     }
+
+    @Test
+    void luaInventoryCountersEnforceStockAndUpdateActualRedisValues() {
+        String syncKey = key("lua-stock-sync");
+        assertThat(sync.luaIncr(syncKey, 2L)).isEqualTo(-3L);
+        sync.set(syncKey, "10");
+        assertThat(sync.luaIncr(syncKey, 2L)).isEqualTo(12L);
+        assertThat(sync.luaDecr(syncKey, 3L)).isEqualTo(9L);
+        assertThat(sync.luaDecr(syncKey, 20L)).isEqualTo(-2L);
+        assertThat(sync.luaDiv(syncKey, 3L)).isEqualTo(3L);
+        assertThat(sync.getLong(syncKey)).isEqualTo(9L);
+
+        String reactiveKey = key("lua-stock-reactive");
+        assertThat(reactive.luaIncr(reactiveKey, 2L).block()).isEqualTo(-3L);
+        reactive.set(reactiveKey, "10").block();
+        assertThat(reactive.luaIncr(reactiveKey, 2L).block()).isEqualTo(12L);
+        assertThat(reactive.luaDecr(reactiveKey, 3L).block()).isEqualTo(9L);
+        assertThat(reactive.luaDecr(reactiveKey, 20L).block()).isEqualTo(-2L);
+        assertThat(reactive.getLong(reactiveKey).block()).isEqualTo(9L);
+    }
+
+    @Test
+    void luaHashInventoryCountersUpdateOnlyTheRequestedField() {
+        String syncKey = key("lua-hash-sync");
+        assertThat(sync.luaHincr(syncKey, "stock", 2L)).isEqualTo(-3L);
+        sync.hSet(syncKey, "stock", "10");
+        sync.hSet(syncKey, "other", "99");
+        assertThat(sync.luaHincr(syncKey, "stock", 2L)).isEqualTo(12L);
+        assertThat(sync.luaHdecr(syncKey, "stock", 3L)).isEqualTo(9L);
+        assertThat(sync.luaHdiv(syncKey, "stock", 3L)).isEqualTo(3L);
+        assertThat(sync.hGetLong(syncKey, "stock")).isEqualTo(9L);
+        assertThat(sync.hGetLong(syncKey, "other")).isEqualTo(99L);
+
+        String reactiveKey = key("lua-hash-reactive");
+        assertThat(reactive.luaHincr(reactiveKey, "stock", 2L).block()).isEqualTo(-3L);
+        reactive.hSet(reactiveKey, "stock", "10").block();
+        reactive.hSet(reactiveKey, "other", "99").block();
+        assertThat(reactive.luaHincr(reactiveKey, "stock", 2L).block()).isEqualTo(12L);
+        assertThat(reactive.luaHdecr(reactiveKey, "stock", 3L).block()).isEqualTo(9L);
+        assertThat(reactive.hGetLong(reactiveKey, "stock").block()).isEqualTo(9L);
+        assertThat(reactive.hGetLong(reactiveKey, "other").block()).isEqualTo(99L);
+    }
+
+    @Test
+    void luaDecimalCountersPreserveFractionalStoredValues() {
+        String syncValue = key("lua-decimal-sync");
+        sync.set(syncValue, "10.5");
+        assertThat(sync.luaIncr(syncValue, 1.25)).isEqualTo(11.75);
+        assertThat(sync.luaDecr(syncValue, 0.5)).isEqualTo(11.25);
+        assertThat(sync.getDouble(syncValue)).isEqualTo(11.25);
+        String syncHash = key("lua-decimal-hash-sync");
+        sync.hSet(syncHash, "stock", "10.5");
+        assertThat(sync.luaHincr(syncHash, "stock", 1.25)).isEqualTo(11.75);
+        assertThat(sync.luaHdecr(syncHash, "stock", 0.5)).isEqualTo(11.25);
+        assertThat(sync.hGetDouble(syncHash, "stock")).isEqualTo(11.25);
+
+        String reactiveValue = key("lua-decimal-reactive");
+        reactive.set(reactiveValue, "10.5").block();
+        assertThat(reactive.luaIncr(reactiveValue, 1.25).block()).isEqualTo(11.75);
+        assertThat(reactive.luaDecr(reactiveValue, 0.5).block()).isEqualTo(11.25);
+        assertThat(reactive.getDouble(reactiveValue).block()).isEqualTo(11.25);
+        String reactiveHash = key("lua-decimal-hash-reactive");
+        reactive.hSet(reactiveHash, "stock", "10.5").block();
+        assertThat(reactive.luaHincr(reactiveHash, "stock", 1.25).block()).isEqualTo(11.75);
+        assertThat(reactive.luaHdecr(reactiveHash, "stock", 0.5).block()).isEqualTo(11.25);
+        assertThat(reactive.hGetDouble(reactiveHash, "stock").block()).isEqualTo(11.25);
+    }
 }
