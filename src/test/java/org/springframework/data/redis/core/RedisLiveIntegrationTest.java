@@ -3156,4 +3156,47 @@ class RedisLiveIntegrationTest {
                 .containsExactly(2, 1);
         assertThat(sync.zScore(sorted, "missing", -1.0)).isEqualTo(-1.0);
     }
+
+    @Test
+    void synchronousSwapAndBulkReadOverloadsReturnStoredOldValues() {
+        String a = key("sync-swap-a"), b = key("sync-swap-b");
+        sync.set(a, "1");
+        sync.set(b, "2");
+        assertThat(sync.mGetFor(List.of(a, b), Integer.class)).containsExactly(1, 2);
+        JsonOperations json = jsonOperations();
+        String numeric = key("sync-json-swap");
+        json.sync().set(numeric, 1);
+        try {
+            assertThat(json.sync().getIntegerAndSet(numeric, 3)).isEqualTo(1);
+            assertThat(json.sync().getLongAndSet(numeric, 4L)).isEqualTo(3L);
+            assertThat(json.sync().getDoubleAndSet(numeric, 5.0)).isEqualTo(4.0);
+            assertThat(json.sync().getForAndSet(numeric, 6, Double.class)).isEqualTo(5.0);
+            assertThat(json.sync().getForAndSet(numeric, 7, new TypeReference<Integer>() {})).isEqualTo(6);
+            assertThat(json.sync().getInteger(numeric)).isEqualTo(7);
+        } finally {
+            sync.del(numeric);
+        }
+        String list = key("sync-push-if-present");
+        assertThat(sync.lLeftPushx(list, "before")).isZero();
+        sync.lRightPush(list, "middle");
+        assertThat(sync.lLeftPushx(list, "before")).isEqualTo(2L);
+        assertThat(sync.lRightPushx(list, "after")).isEqualTo(3L);
+        assertThat(sync.lRangeFor(list, 0, -1, String.class))
+                .containsExactly("before", "middle", "after");
+    }
+
+    @Test
+    void synchronousBulkHashReadsAndDefaultsReflectActualFields() {
+        String first = key("sync-hash-bulk-a"), second = key("sync-hash-bulk-b");
+        sync.hSet(first, "id", "1");
+        sync.hSet(second, "id", "2");
+        assertThat(sync.hGet(first, "missing", "fallback")).isEqualTo("fallback");
+        assertThat(sync.hGet(first, "id", "fallback")).isEqualTo("1");
+        assertThat(sync.hmGet(List.of(first, second)))
+                .containsExactly(Map.of("id", "1"), Map.of("id", "2"));
+        assertThat(sync.hGetAllFor(List.of(first, second), Map.class))
+                .containsExactly(Map.of("id", "1"), Map.of("id", "2"));
+        assertThat(sync.hGetAllFor(List.of(first, second), new TypeReference<Map<String, String>>() {}))
+                .containsExactly(Map.of("id", "1"), Map.of("id", "2"));
+    }
 }
