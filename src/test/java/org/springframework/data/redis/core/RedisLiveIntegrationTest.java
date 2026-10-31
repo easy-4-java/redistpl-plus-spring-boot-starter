@@ -1578,4 +1578,27 @@ class RedisLiveIntegrationTest {
         assertThat(sync.hmGet(hash)).containsExactlyInAnyOrderEntriesOf(
                 Map.of("1", "10", "2", "20"));
     }
+
+    @Test
+    void ownerTokenLockRejectsOtherOwnersAndReleasesOnlyItsOwnKey() {
+        String lock = key("owner-lock");
+        assertThat(sync.tryLock(lock, "owner-a", 30_000L, 0, 0L)).isTrue();
+        assertThat(sync.tryLock(lock, "owner-b", 30_000L, 0, 0L)).isFalse();
+        assertThat(sync.unlock(lock, "owner-b")).isFalse();
+        assertThat(sync.hasKey(lock)).isTrue();
+        assertThat(sync.unlock(lock, "owner-a")).isTrue();
+        assertThat(sync.hasKey(lock)).isFalse();
+
+        String reactiveLock = key("owner-lock-reactive");
+        assertThat(reactive.tryLock(reactiveLock, "owner-a", 30_000L, 0, 0L)
+                .block(Duration.ofSeconds(5))).isTrue();
+        assertThat(reactive.tryLock(reactiveLock, "owner-b", 30_000L, 0, 0L)
+                .block(Duration.ofSeconds(5))).isFalse();
+        assertThat(reactive.unlock(reactiveLock, "owner-b").block(Duration.ofSeconds(5)))
+                .isFalse();
+        assertThat(reactive.hasKey(reactiveLock).block()).isTrue();
+        assertThat(reactive.unlock(reactiveLock, "owner-a").block(Duration.ofSeconds(5)))
+                .isTrue();
+        assertThat(reactive.hasKey(reactiveLock).block()).isFalse();
+    }
 }
