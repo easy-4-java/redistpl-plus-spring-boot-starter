@@ -2,11 +2,14 @@ package org.springframework.data.redis.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -28,6 +31,9 @@ import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
 import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import redistpl.plus.spring.boot.RedisCachingConfiguration;
 import redistpl.plus.spring.boot.RedisReactiveCachingConfiguration;
 import reactor.core.publisher.Mono;
 
@@ -1361,5 +1367,60 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.luaHincr(reactiveHash, "stock", 1.25).block()).isEqualTo(11.75);
         assertThat(reactive.luaHdecr(reactiveHash, "stock", 0.5).block()).isEqualTo(11.25);
         assertThat(reactive.hGetDouble(reactiveHash, "stock").block()).isEqualTo(11.25);
+    }
+
+    @Test
+    void sortedSetTupleBatchesAndTimedWritesPreserveScores() {
+        Set<ZSetOperations.TypedTuple<Object>> first = Set.of(
+                new DefaultTypedTuple<>("low", 1.0), new DefaultTypedTuple<>("high", 3.0));
+        String syncSeconds = key("zset-tuples-seconds");
+        assertThat(sync.zAdd(syncSeconds, first, 30L)).isEqualTo(2L);
+        assertThat(sync.zRange(syncSeconds, 0, -1)).containsExactly("low", "high");
+        assertThat(sync.zScore(syncSeconds, "high")).isEqualTo(3.0);
+        assertThat(sync.getExpire(syncSeconds)).isBetween(1L, 30L);
+
+        String syncDuration = key("zset-tuples-duration");
+        assertThat(sync.zAdd(syncDuration, first, Duration.ofSeconds(30))).isEqualTo(2L);
+        assertThat(sync.zRange(syncDuration, 0, -1)).containsExactly("low", "high");
+        assertThat(sync.zScore(syncDuration, "low")).isEqualTo(1.0);
+        assertThat(sync.getExpire(syncDuration)).isBetween(1L, 30L);
+
+        String reactiveKey = key("zset-tuples-reactive");
+        assertThat(reactive.zAdd(reactiveKey, first).block()).isEqualTo(2L);
+        assertThat(reactive.zRange(reactiveKey, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("low", "high");
+        assertThat(reactive.zScore(reactiveKey, "high").block()).isEqualTo(3.0);
+        assertThat(reactive.zRevRank(reactiveKey, "high").block()).isZero();
+        assertThat(reactive.zRem(reactiveKey, "low").block()).isEqualTo(1L);
+        assertThat(reactive.zRange(reactiveKey, Range.closed(0L, 1L)).collectList().block())
+                .containsExactly("high");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void configuredSynchronousTemplatesRoundTripActualRedisValues() {
+        RedisCachingConfiguration configuration = new RedisCachingConfiguration();
+        ObjectProvider<RedisConnectionFactory> factories = mock(ObjectProvider.class);
+        when(factories.getIfAvailable()).thenReturn(connection);
+        Jackson2JsonRedisSerializer<Object> json = new Jackson2JsonRedisSerializer<>(
+                new ObjectMapper(), Object.class);
+        ObjectProvider<Jackson2JsonRedisSerializer<Object>> serializers = mock(ObjectProvider.class);
+        when(serializers.getIfAvailable()).thenReturn(json);
+        ObjectProvider<JsonMapperBuilderCustomizer> customizers = mock(ObjectProvider.class);
+        when(customizers.orderedStream()).thenReturn(Stream.empty());
+
+        RedisTemplate<String, Object> configured = configuration.redisTemplate(factories, serializers);
+        String valueKey = key("configured-sync-value");
+        configured.opsForValue().set(valueKey, "ready");
+        assertThat(configured.opsForValue().get(valueKey)).isEqualTo("ready");
+        RedisOperationTemplate wrapped = configuration.redisOperationTemplate(configured, customizers);
+        assertThat(wrapped.getString(valueKey)).isEqualTo("ready");
+        assertThat(configuration.geoTemplate(configured)).isNotNull();
+
+        StringRedisTemplate strings = configuration.stringRedisTemplate(factories);
+        strings.afterPropertiesSet();
+        String plainKey = key("configured-string-value");
+        strings.opsForValue().set(plainKey, "plain");
+        assertThat(strings.opsForValue().get(plainKey)).isEqualTo("plain");
     }
 }
