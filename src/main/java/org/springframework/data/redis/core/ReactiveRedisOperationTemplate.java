@@ -1261,9 +1261,12 @@ public class ReactiveRedisOperationTemplate {
 
 	public <V> Mono<Long> lRightPushxAll(String key, Collection<V> values, long seconds) {
 		try {
-			return Flux.fromIterable(values).flatMap(value -> {
+			if (values.isEmpty()) {
+				return Mono.just(0L);
+			}
+			return Flux.fromIterable(values).concatMap(value -> {
 				return getListOperations().rightPushIfPresent(key, value);
-			}).next().transform(operation -> expireAfter(operation, key, seconds));
+			}).count().transform(operation -> expireAfter(operation, key, seconds));
 		} catch (Exception e) {
 			return monoError(e);
 		}
@@ -1271,9 +1274,12 @@ public class ReactiveRedisOperationTemplate {
 
 	public <V> Mono<Long> lRightPushxAll(String key, Collection<V> values, Duration timeout) {
 		try {
-			return Flux.fromIterable(values).flatMap(value -> {
+			if (values.isEmpty()) {
+				return Mono.just(0L);
+			}
+			return Flux.fromIterable(values).concatMap(value -> {
 				return getListOperations().rightPushIfPresent(key, value);
-			}).next().transform(operation -> expireAfter(operation, key, timeout));
+			}).count().transform(operation -> expireAfter(operation, key, timeout));
 		} catch (Exception e) {
 			return monoError(e);
 		}
