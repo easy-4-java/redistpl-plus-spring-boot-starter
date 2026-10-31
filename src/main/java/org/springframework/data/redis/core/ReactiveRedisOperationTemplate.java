@@ -1891,9 +1891,9 @@ public class ReactiveRedisOperationTemplate {
 			return Mono.just(false);
 		}
 		try {
-			return Flux.fromIterable(hashKeys).flatMap(hashKey -> {
-				return getHashOperations().put(key, hashKeys, value);
-			}).all(rt -> rt == true);
+			return Flux.fromIterable(hashKeys)
+					.concatMap(hashKey -> getHashOperations().put(key, hashKey, value))
+					.then(Mono.just(true));
 		} catch (Exception e) {
 			return monoError(e);
 		}
