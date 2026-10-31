@@ -1,11 +1,15 @@
 package org.springframework.data.redis.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import java.util.Map;
+
+import org.springframework.data.redis.core.RedisOperationException;
 
 import org.junit.jupiter.api.Test;
 
@@ -235,6 +239,30 @@ class ObjectMappersTest {
         ObjectMapper mapper = new ObjectMapper();
         Function<Object, TestBean> func = ObjectMappers.getMapperFor(mapper, (java.lang.reflect.Type) TestBean.class);
         assertThat(func.apply(null)).isNull();
+    }
+
+    @Test
+    void parameterizedTypeMapperConvertsStringsAndObjectsAndReportsBadJson() {
+        ObjectMapper mapper = new ObjectMapper();
+        java.lang.reflect.Type type = new TypeReference<List<TestBean>>() {}.getType();
+        Function<Object, List<TestBean>> convert = ObjectMappers.getMapperFor(mapper, type);
+        assertThat(convert.apply("[{\"name\":\"Ada\"}]"))
+                .extracting(TestBean::getName).containsExactly("Ada");
+        assertThat(convert.apply(List.of(Map.of("name", "Lin"))))
+                .extracting(TestBean::getName).containsExactly("Lin");
+        assertThat(convert.apply(null)).isNull();
+        assertThatThrownBy(() -> convert.apply("not-json"))
+                .isInstanceOf(RedisOperationException.class);
+    }
+
+    @Test
+    void classAndJavaTypeMappersReportMalformedJson() {
+        ObjectMapper mapper = new ObjectMapper();
+        assertThatThrownBy(() -> ObjectMappers.getMapperFor(mapper, TestBean.class).apply("not-json"))
+                .isInstanceOf(RedisOperationException.class);
+        JavaType type = mapper.constructType(TestBean.class);
+        assertThatThrownBy(() -> ObjectMappers.getMapperFor(mapper, type).apply("not-json"))
+                .isInstanceOf(RedisOperationException.class);
     }
 
     public static class TestBean {
