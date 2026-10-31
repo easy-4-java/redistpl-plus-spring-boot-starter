@@ -1151,4 +1151,35 @@ class RedisLiveIntegrationTest {
                 .containsExactly("2", "4");
         assertThat(reactive.hGet(reactiveFirst, "count").block()).isEqualTo("2");
     }
+
+    @Test
+    void hashBulkWritesPersistEachRequestedKeyAndField() {
+        String first = key("hash-bulk-sync-a");
+        String second = key("hash-bulk-sync-b");
+        assertThat(sync.hMultiSet(List.of(first, second), "status", "ready")).isTrue();
+        assertThat(sync.hGet(first, "status")).isEqualTo("ready");
+        assertThat(sync.hGet(second, "status")).isEqualTo("ready");
+        assertThat(sync.hMultiSet(List.<String>of(), "status", "ignored")).isFalse();
+        assertThat(sync.hmSet(first, Map.of("count", "2"), 30L)).isTrue();
+        assertThat(sync.hmSet(second, Map.of("count", "4"), Duration.ofSeconds(30))).isTrue();
+        assertThat(sync.hGetLong(first, "count")).isEqualTo(2L);
+        assertThat(sync.hGetLong(second, "count")).isEqualTo(4L);
+        assertThat(sync.getExpire(first)).isBetween(1L, 30L);
+        assertThat(sync.getExpire(second)).isBetween(1L, 30L);
+
+        String reactiveKey = key("hash-bulk-reactive");
+        assertThat(reactive.hmMultiSet(reactiveKey, List.<Object>of("a", "b"), "shared").block())
+                .isTrue();
+        assertThat(reactive.hGet(reactiveKey, "a").block()).isEqualTo("shared");
+        assertThat(reactive.hGet(reactiveKey, "b").block()).isEqualTo("shared");
+        assertThat(reactive.hmMultiSet(reactiveKey, List.<Object>of("a", "b"), "updated").block())
+                .isTrue();
+        assertThat(reactive.hGet(reactiveKey, "a").block()).isEqualTo("updated");
+        assertThat(reactive.hGet(reactiveKey, "b").block()).isEqualTo("updated");
+        assertThat(reactive.hmMultiSet(reactiveKey, List.of(), "ignored").block()).isFalse();
+        assertThat(reactive.hmSet(reactiveKey, Map.<Object, Object>of("count", "2"), 30L).block())
+                .isTrue();
+        assertThat(reactive.hGetLong(reactiveKey, "count").block()).isEqualTo(2L);
+        assertTimed(reactiveKey);
+    }
 }
