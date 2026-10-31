@@ -1906,4 +1906,35 @@ class RedisLiveIntegrationTest {
         assertThat(sync.lRangeString(left, 0, -1)).containsExactly("b");
         assertThat(sync.lRangeString(right, 0, -1)).containsExactly("y");
     }
+
+    @Test
+    void reactiveLeftPushIfPresentBatchRetainsItsCountContract() {
+        List<String> seed = List.of("s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9");
+        String secondsKey = key("left-pushx-seconds");
+        reactive.lRightPushAll(secondsKey, seed).block();
+        assertThat(reactive.lLeftPushxAll(secondsKey, List.of("a", "b", "c"), 30L).block())
+                .isEqualTo(3L);
+        assertThat(reactive.lRangeString(secondsKey, 0, -1).collectList().block())
+                .containsExactlyInAnyOrder("a", "b", "c", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9");
+        assertTimed(secondsKey);
+
+        String durationKey = key("left-pushx-duration");
+        reactive.lRightPushAll(durationKey, seed).block();
+        assertThat(reactive.lLeftPushxAll(durationKey, List.of("a", "b", "c"), Duration.ofSeconds(30)).block())
+                .isEqualTo(3L);
+        assertThat(reactive.lSize(durationKey).block()).isEqualTo(13L);
+        assertTimed(durationKey);
+
+        String missing = key("left-pushx-missing");
+        assertThat(reactive.lLeftPushxAll(missing, List.of("a", "b", "c"), 30L).block()).isEqualTo(3L);
+        assertThat(reactive.hasKey(missing).block()).isFalse();
+        assertThat(reactive.lLeftPushxAll(missing, List.<String>of(), Duration.ofSeconds(30)).block()).isZero();
+        assertThat(reactive.hasKey(missing).block()).isFalse();
+
+        String badValue = key("left-pushx-later-error");
+        reactive.lRightPush(badValue, "seed").block();
+        assertThatThrownBy(() -> reactive.lLeftPushxAll(badValue, List.<Object>of("a", 123), 30L).block())
+                .isInstanceOf(RuntimeException.class);
+        assertThat(reactive.getExpire(badValue).block()).isEqualTo(Duration.ZERO);
+    }
 }
