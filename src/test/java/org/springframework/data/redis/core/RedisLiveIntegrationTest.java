@@ -1182,4 +1182,37 @@ class RedisLiveIntegrationTest {
         assertThat(reactive.hGetLong(reactiveKey, "count").block()).isEqualTo(2L);
         assertTimed(reactiveKey);
     }
+
+    @Test
+    void setAlgebraAndRemovalMatchStoredMembership() {
+        String left = key("set-algebra-a");
+        String right = key("set-algebra-b");
+        assertThat(sync.sAdd(left, "a", "b", "c")).isEqualTo(3L);
+        assertThat(sync.sAdd(right, "b", "d")).isEqualTo(2L);
+        assertThat(sync.sSize(left)).isEqualTo(3L);
+        assertThat(sync.sDiff(left, right)).containsExactlyInAnyOrder("a", "c");
+        assertThat(sync.sIntersect(left, right)).containsExactly("b");
+        assertThat(sync.sUnion(left, right)).containsExactlyInAnyOrder("a", "b", "c", "d");
+        assertThat(sync.sRandomDistinct(left, 2)).hasSize(2).isSubsetOf("a", "b", "c");
+        assertThat(sync.sRemove(left, "a", "c")).isEqualTo(2L);
+        assertThat(sync.sGet(left)).containsExactly("b");
+        assertThat(sync.sHasKey(left, "a")).isFalse();
+
+        String reactiveLeft = key("set-algebra-reactive-a");
+        String reactiveRight = key("set-algebra-reactive-b");
+        assertThat(reactive.sAdd(reactiveLeft, "a", "b", "c").block()).isEqualTo(3L);
+        assertThat(reactive.sAdd(reactiveRight, "b", "d").block()).isEqualTo(2L);
+        assertThat(reactive.sSize(reactiveLeft).block()).isEqualTo(3L);
+        assertThat(reactive.sDiff(reactiveLeft, reactiveRight).collectList().block())
+                .containsExactlyInAnyOrder("a", "c");
+        assertThat(reactive.sIntersect(reactiveLeft, reactiveRight).collectList().block())
+                .containsExactly("b");
+        assertThat(reactive.sUnion(reactiveLeft, reactiveRight).collectList().block())
+                .containsExactlyInAnyOrder("a", "b", "c", "d");
+        assertThat(reactive.sRandomSetDistinct(reactiveLeft, 2).collectList().block())
+                .hasSize(2).isSubsetOf("a", "b", "c");
+        assertThat(reactive.sRemove(reactiveLeft, "a", "c").block()).isEqualTo(2L);
+        assertThat(reactive.sGet(reactiveLeft).collectList().block()).containsExactly("b");
+        assertThat(reactive.sHasKey(reactiveLeft, "a").block()).isFalse();
+    }
 }
