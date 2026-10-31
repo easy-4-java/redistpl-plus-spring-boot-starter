@@ -1670,6 +1670,43 @@ class RedisLiveIntegrationTest {
         }));
     }
 
+    @TestFactory
+    Stream<DynamicTest> synchronousCollectionAlgebraRejectsWrongTypeSources() {
+        List<WrongTypeOperation> commands = List.of(
+                new WrongTypeOperation("set difference store collection", k ->
+                        sync.sDiffAndStore(k, List.of(key("other")), key("destination"))),
+                new WrongTypeOperation("set difference store only collection", k ->
+                        sync.sDiffAndStore(List.of(k, key("other")), key("destination"))),
+                new WrongTypeOperation("set intersection collection", k ->
+                        sync.sIntersect(k, List.of(key("other")))),
+                new WrongTypeOperation("set intersection only collection", k ->
+                        sync.sIntersect(List.of(k, key("other")))),
+                new WrongTypeOperation("set intersection store collection", k ->
+                        sync.sIntersectAndStore(k, List.of(key("other")), key("destination"))),
+                new WrongTypeOperation("set intersection store only collection", k ->
+                        sync.sIntersectAndStore(List.of(k, key("other")), key("destination"))),
+                new WrongTypeOperation("set union collection", k ->
+                        sync.sUnion(k, List.of(key("other")))),
+                new WrongTypeOperation("set union only collection", k ->
+                        sync.sUnion(List.of(k, key("other")))),
+                new WrongTypeOperation("set union store collection", k ->
+                        sync.sUnionAndStore(k, List.of(key("other")), key("destination"))),
+                new WrongTypeOperation("set union store only collection", k ->
+                        sync.sUnionAndStore(List.of(k, key("other")), key("destination"))),
+                new WrongTypeOperation("sorted intersection store collection", k ->
+                        sync.zIntersectAndStore(k, List.of(key("other")), key("destination"))),
+                new WrongTypeOperation("sorted union store collection", k ->
+                        sync.zUnionAndStore(k, List.of(key("other")), key("destination")))
+        );
+        return commands.stream().map(operation -> DynamicTest.dynamicTest(operation.name(), () -> {
+            String source = key("wrong-collection-source");
+            sync.set(source, "original");
+            assertThatThrownBy(() -> operation.invoke().accept(source))
+                    .isInstanceOf(RedisOperationException.class);
+            assertThat(sync.getString(source)).isEqualTo("original");
+        }));
+    }
+
     private record JsonOperations(RedisOperationTemplate sync, ReactiveRedisOperationTemplate reactive) {}
 
     @SuppressWarnings("unchecked")
