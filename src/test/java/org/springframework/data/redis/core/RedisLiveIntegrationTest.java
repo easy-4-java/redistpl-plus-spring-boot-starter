@@ -3126,4 +3126,34 @@ class RedisLiveIntegrationTest {
         assertThat(sync.unlock(lock, "second")).isTrue();
         assertThat(sync.hasKey(lock)).isFalse();
     }
+
+    @Test
+    void synchronousTypedSortedSetRangesPreserveOrderAndScores() {
+        String sorted = key("typed-zset-ranges");
+        sync.zAdd(sorted, "1", 1.0);
+        sync.zAdd(sorted, "2", 2.0);
+        sync.zAdd(sorted, "3", 3.0);
+        assertThat(sync.zRangeDouble(sorted, 0, -1)).containsExactly(1.0, 2.0, 3.0);
+        assertThat(sync.zRangeFor(sorted, 0, -1, Integer.class)).containsExactly(1, 2, 3);
+        assertThat(sync.zRangeFor(sorted, 0, -1, new TypeReference<Integer>() {}))
+                .containsExactly(1, 2, 3);
+        assertThat(sync.zRangeLongByScore(sorted, 1.0, 2.0)).containsExactly(1L, 2L);
+        assertThat(sync.zRangeIntegerByScore(sorted, 1.0, 2.0)).containsExactly(1, 2);
+        assertThat(sync.zRangeByScoreFor(sorted, 1.0, 2.0, Integer.class)).containsExactly(1, 2);
+        assertThat(sync.zRangeByScoreFor(sorted, 1.0, 2.0, new TypeReference<Integer>() {}))
+                .containsExactly(1, 2);
+        assertThat(sync.zRevrangeString(sorted, 0, -1)).containsExactly("3", "2", "1");
+        assertThat(sync.zRevrangeDouble(sorted, 0, -1)).containsExactly(3.0, 2.0, 1.0);
+        assertThat(sync.zRevrangeLong(sorted, 0, -1)).containsExactly(3L, 2L, 1L);
+        assertThat(sync.zRevrangeFor(sorted, 0, -1, Integer.class)).containsExactly(3, 2, 1);
+        assertThat(sync.zRevrangeFor(sorted, 0, -1, new TypeReference<Integer>() {}))
+                .containsExactly(3, 2, 1);
+        assertThat(sync.zRevrangeDoubleByScore(sorted, 1.0, 2.0)).containsExactly(2.0, 1.0);
+        assertThat(sync.zRevrangeLongByScore(sorted, 1.0, 2.0)).containsExactly(2L, 1L);
+        assertThat(sync.zRevrangeIntegerByScore(sorted, 1.0, 2.0)).containsExactly(2, 1);
+        assertThat(sync.zRevrangeForByScore(sorted, 1.0, 2.0, Integer.class)).containsExactly(2, 1);
+        assertThat(sync.zRevrangeForByScore(sorted, 1.0, 2.0, new TypeReference<Integer>() {}))
+                .containsExactly(2, 1);
+        assertThat(sync.zScore(sorted, "missing", -1.0)).isEqualTo(-1.0);
+    }
 }
