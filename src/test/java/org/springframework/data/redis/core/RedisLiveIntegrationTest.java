@@ -3395,4 +3395,87 @@ class RedisLiveIntegrationTest {
                 .isInstanceOf(RedisOperationException.class);
         assertThat(sync.getString(source)).isEqualTo("original");
     }
+
+    @Test
+    void synchronousScanDeleteHelpersRejectWrongTypeKeysWithoutDeletingThem() {
+        String hash = key("wrong-hash-delete"), sorted = key("wrong-sorted-delete");
+        sync.set(hash, "original");
+        sync.set(sorted, "original");
+        assertThatThrownBy(() -> sync.hDel(hash)).isInstanceOf(RedisOperationException.class);
+        assertThatThrownBy(() -> sync.zScan(sorted, tuple -> {}))
+                .isInstanceOf(RedisOperationException.class);
+        assertThatThrownBy(() -> sync.zDel(sorted)).isInstanceOf(RedisOperationException.class);
+        assertThat(sync.getString(hash)).isEqualTo("original");
+        assertThat(sync.getString(sorted)).isEqualTo("original");
+    }
+
+    @Test
+    void synchronousPrefixedHashReadAndInvalidBulkInputPropagateErrors() {
+        String prefix = key("wrong-prefixed-hash");
+        String source = RedisKey.getKeyStr(prefix, "item");
+        sync.set(source, "original");
+        assertThatThrownBy(() -> sync.hGet(List.of("item"), prefix, "field"))
+                .isInstanceOf(RedisOperationException.class);
+        assertThat(sync.getString(source)).isEqualTo("original");
+        assertThatThrownBy(() -> sync.mGet(java.util.Arrays.asList((Object) null), prefix))
+                .isInstanceOf(RedisOperationException.class);
+        assertThatThrownBy(() -> sync.lLeftPushAll(key("invalid-list-values"), null))
+                .isInstanceOf(RedisOperationException.class);
+    }
+
+    @Test
+    void synchronousNumericHashKeyViewsConvertEveryEntry() {
+        String hash = key("numeric-hash-views");
+        sync.hSet(hash, "1", "2");
+        assertThat(sync.hmGetForString(hash, value -> Integer.parseInt(value.toString())))
+                .containsEntry("1", 2);
+        assertThat(sync.hmGetForInteger(hash)).containsEntry(1, 2);
+        assertThat(sync.hmGetForInteger(hash, Object::toString)).containsEntry(1, "2");
+        assertThat(sync.hmGetForInteger(hash, String.class)).containsEntry(1, "2");
+        assertThat(sync.hmGetForInteger(hash, new TypeReference<String>() {})).containsEntry(1, "2");
+        assertThat(sync.hmGetForLong(hash, Object::toString)).containsEntry(1L, "2");
+        assertThat(sync.hmGetForLong(hash, Integer.class)).containsEntry(1L, 2);
+        assertThat(sync.hmGetForLong(hash, new TypeReference<Integer>() {})).containsEntry(1L, 2);
+        assertThat(sync.hmGetForDouble(hash, Object::toString)).containsEntry(1.0, "2");
+        assertThat(sync.hmGetForDouble(hash, Integer.class)).containsEntry(1.0, 2);
+        assertThat(sync.hmGetForDouble(hash, new TypeReference<Integer>() {})).containsEntry(1.0, 2);
+    }
+
+    @Test
+    void synchronousSortedSetCollectionStoreOverloadsPreserveAggregatedScores() {
+        String left = key("collection-z-left"), right = key("collection-z-right");
+        sync.zAdd(left, "shared", 1.0);
+        sync.zAdd(left, "left", 2.0);
+        sync.zAdd(right, "shared", 3.0);
+        sync.zAdd(right, "right", 4.0);
+        String intersection = key("collection-z-intersection");
+        String union = key("collection-z-union");
+        assertThat(sync.zIntersectAndStore(left, List.of(right), intersection)).isEqualTo(1L);
+        assertThat(sync.zScore(intersection, "shared")).isEqualTo(4.0);
+        assertThat(sync.zUnionAndStore(left, List.of(right), union)).isEqualTo(3L);
+        assertThat(sync.zScore(union, "shared")).isEqualTo(4.0);
+        assertThat(sync.zRangeString(union, 0, -1)).containsExactly("left", "right", "shared");
+    }
+
+    @Test
+    void synchronousScanDeleteHelpersRemoveTheirOwnPopulatedKeys() {
+        String hash = key("scan-delete-hash"), sorted = key("scan-delete-zset");
+        sync.hSet(hash, "a", "one");
+        sync.hSet(hash, "b", "two");
+        sync.zAdd(sorted, "a", 1.0);
+        sync.zAdd(sorted, "b", 2.0);
+        List<String> visited = new ArrayList<>();
+        sync.zScan(sorted, tuple -> visited.add(new String(tuple.getValue(), java.nio.charset.StandardCharsets.UTF_8)));
+        assertThat(visited).containsExactlyInAnyOrder("a", "b");
+        sync.hDel(hash);
+        assertThat(sync.hasKey(hash)).isFalse();
+        assertThat(sync.zDel(sorted)).isNotNull();
+        assertThat(sync.hasKey(sorted)).isFalse();
+    }
+
+    @Test
+    void synchronousPublishRejectsMissingChannel() {
+        assertThatThrownBy(() -> sync.sendMessage(null, "payload"))
+                .isInstanceOf(RedisOperationException.class);
+    }
 }
