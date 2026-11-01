@@ -6,6 +6,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +18,28 @@ import org.junit.jupiter.api.Test;
  * @author <a href="https://github.com/loong10k">Loong Wan</a>
  */
 class RedisBeanSerializerModifierTest {
+
+    public static class NullFields {
+        public List<String> items;
+        public Integer count;
+        public Boolean enabled;
+        public String label;
+        public LocalDate created;
+    }
+
+    @Test
+    void modifierSerializesNullFieldsWithTheirDocumentedDefaults() throws Exception {
+        ObjectMapper mapper = JsonMapper.builder()
+                .serializerFactory(BeanSerializerFactory.instance.withSerializerModifier(new RedisBeanSerializerModifier()))
+                .build();
+        var document = mapper.readTree(mapper.writeValueAsString(new NullFields()));
+        assertThat(document.get("items").isArray()).isTrue();
+        assertThat(document.get("items")).isEmpty();
+        assertThat(document.get("count").asInt()).isZero();
+        assertThat(document.get("enabled").asBoolean()).isFalse();
+        assertThat(document.get("label").asText()).isEmpty();
+        assertThat(LocalDate.parse(document.get("created").asText().substring(0, 10))).isNotNull();
+    }
 
     private RedisBeanSerializerModifier modifier;
 
