@@ -54,6 +54,9 @@ jobs:
           cd "$RUNNER_TEMP/redis-package"
           apt-get download redis-server
           dpkg-deb -x redis-server_*.deb extracted
+          # Ubuntu packages redis-server as a symlink to the binary in redis-tools.
+          test -x /usr/bin/redis-check-rdb
+          ln -s /usr/bin/redis-check-rdb extracted/usr/bin/redis-check-rdb
           echo "$RUNNER_TEMP/redis-package/extracted/usr/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/redis-package/extracted/usr/bin/redis-server" --version
 
