@@ -265,6 +265,22 @@ class ObjectMappersTest {
                 .isInstanceOf(RedisOperationException.class);
     }
 
+    public static class JavaTypeOnlyBean {
+        public String name;
+    }
+
+    @Test
+    void uncachedJavaTypeMapperConvertsAndReportsInvalidInput() {
+        ObjectMapper mapper = new ObjectMapper();
+        JavaType javaType = mapper.constructType(JavaTypeOnlyBean.class);
+        Function<Object, JavaTypeOnlyBean> convert = ObjectMappers.getMapperFor(mapper, javaType);
+        assertThat(convert.apply("{\"name\":\"Ada\"}").name).isEqualTo("Ada");
+        assertThat(convert.apply(Map.of("name", "Lin")).name).isEqualTo("Lin");
+        assertThat(convert.apply(null)).isNull();
+        assertThatThrownBy(() -> convert.apply("not-json"))
+                .isInstanceOf(RedisOperationException.class);
+    }
+
     public static class TestBean {
         private String name;
 
